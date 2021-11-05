@@ -1,138 +1,183 @@
 import sublime
 import sublime_plugin
 
+
 C_KEYWORDS = (
-    "auto",
-    "break",
-    "case",
-    "char",
-    "const",
-    "continue",
-    "default",
-    "do",
-    "double",
-    "else",
-    "enum",
-    "extern",
-    "float",
-    "for",
-    "goto",
-    "if",
-    "int",
-    "long",
-    "register",
-    "return",
-    "short",
-    "signed",
-    "sizeof",
-    "static",
-    "struct",
-    "switch",
-    "typedef",
-    "union",
-    "unsigned",
-    "void",
-    "volatile",
-    "while",
+    ("auto", ""),
+    ("break", ""),
+    ("case", ""),
+    ("char", ""),
+    ("const", ""),
+    ("continue", ""),
+    ("default", ""),
+    ("do", ""),
+    ("double", ""),
+    ("else", ""),
+    ("enum", ""),
+    ("extern", ""),
+    ("float", ""),
+    ("for", ""),
+    ("goto", ""),
+    ("if", ""),
+    ("int", ""),
+    ("long", ""),
+    ("register", ""),
+    ("return", ""),
+    ("short", ""),
+    ("signed", ""),
+    ("sizeof", ""),
+    ("static", ""),
+    ("struct", ""),
+    ("switch", ""),
+    ("typedef", ""),
+    ("union", ""),
+    ("unsigned", ""),
+    ("void", ""),
+    ("volatile", ""),
+    ("while", ""),
+    ("inline", "C99"),  # c99
+    ("restrict", "C99"),  # c99
+    ("_Bool", "C99"),  # c99
+    ("_Complex", "C99"),  # c99
+    ("_Imaginary", "C99"),  # c99
+    ("_Alignas", "C11"),  # c11
+    ("_Alignof", "C11"),  # c11
+    ("_Atomic", "C11"),  # c11
+    ("_Generic", "C11"),  # c11
+    ("_Noreturn", "C11"),  # c11
+    ("_Static_assert", "C11"),  # c11
+    ("_Thread_local", "C11"),  # c11
 )
 
-C99_KEYWORDS = (
-    "inline",  # c99
-    "restrict",  # c99
-    "_Bool",  # c99
-    "_Complex",  # c99
-    "_Imaginary",  # c99
-)
-
-C11_KEYWORDS = (
-    "_Alignas",  # c11
-    "_Alignof",  # c11
-    "_Atomic",  # c11
-    "_Generic",  # c11
-    "_Noreturn",  # c11
-    "_Static_assert",  # c11
-    "_Thread_local",  # c11
-)
 
 CPP_KEYWORDS = (
-    "and",
-    "and_eq",
-    "asm",
-    "bitand",
-    "bitor",
-    "bool",
-    "catch",
-    "class",
-    "compl",
-    "const_cast",
-    "delete",
-    "dynamic_cast",
-    "explicit",
-    "export",
-    "false",
-    "friend",
-    "inline",
-    "mutable",
-    "namespace",
-    "new",
-    "not",
-    "not_eq",
-    "operator",
-    "or",
-    "or_eq",
-    "private",
-    "protected",
-    "public",
-    "reinterpret_cast",
-    "static_cast",
-    "template",
-    "this",
-    "throw",
-    "true",
-    "try",
-    "typeid",
-    "typename",
-    "using",
-    "virtual",
-    "wchar_t",
-    "xor",
-    "xor_eq",
+    ("alignas", ""),
+    ("alignof", ""),
+    ("and", ""),
+    ("and_eq", ""),
+    ("asm", ""),
+    ("auto", ""),
+    ("bitand", ""),
+    ("bitor", ""),
+    ("bool", ""),
+    ("break", ""),
+    ("case", ""),
+    ("catch", ""),
+    ("char", ""),
+    ("char8_t", ""),
+    ("char16_t", ""),
+    ("char32_t", ""),
+    ("class", ""),
+    ("compl", ""),
+    ("const", ""),
+    ("const_cast", ""),
+    ("consteval", ""),
+    ("constexpr", ""),
+    ("continue", ""),
+    ("decltype", ""),
+    ("default", ""),
+    ("delete", ""),
+    ("do", ""),
+    ("double", ""),
+    ("dynamic_cast", ""),
+    ("else", ""),
+    ("enum", ""),
+    ("explicit", ""),
+    ("extern", ""),
+    ("false", ""),
+    ("float", ""),
+    ("for", ""),
+    ("friend", ""),
+    ("goto", ""),
+    ("if", ""),
+    ("inline", ""),
+    ("int", ""),
+    ("long", ""),
+    ("mutable", ""),
+    ("namespace", ""),
+    ("new", ""),
+    ("noexcept", ""),
+    ("not", ""),
+    ("not_eq", ""),
+    ("nullptr", ""),
+    ("operator", ""),
+    ("or", ""),
+    ("or_eq", ""),
+    ("private", ""),
+    ("protected", ""),
+    ("public", ""),
+    ("register", ""),
+    ("return", ""),
+    ("short", ""),
+    ("signed", ""),
+    ("sizeof", ""),
+    ("static", ""),
+    ("static_assert", ""),
+    ("static_cast", ""),
+    ("struct", ""),
+    ("switch", ""),
+    ("template", ""),
+    ("this", ""),
+    ("thread_local", ""),
+    ("throw", ""),
+    ("true", ""),
+    ("try", ""),
+    ("typedef", ""),
+    ("typeid", ""),
+    ("typename", ""),
+    ("union", ""),
+    ("unsigned", ""),
+    ("using", ""),
+    ("virtual", ""),
+    ("void", ""),
+    ("volatile", ""),
+    ("wchar_t", ""),
+    ("while", ""),
+    ("xor", ""),
+    ("xor_eq", ""),
+    ("concept", "CPP20"),
+    ("constinit", "CPP20"),
+    ("co_await", "CPP20"),
+    ("co_return", "CPP20"),
+    ("co_yield", "CPP20"),
+    ("export", "CPP20"),
+    ("requires", "CPP20"),
 )
 
-CPP11_KEYWORDS = (
-    "alignas",
-    "alignof",
-    "char16_t",
-    "char32_t",
-    "constexpr",
-    "decltype",
-    "notexcept",
-    "nullptr",
-    "static_assert",
-    "thread_local",
-)
 
 PREPROCESSOR_DIRECTIVES = [
-    "#include",
     "#define",
-    "defined",
-    "#undef",
-    "#if",
-    "#ifdef",
-    "#ifndef",
+    "#elif",
     "#else",
     "#endif",
     "#error",
+    "#if",
+    "#ifdef",
+    "#ifndef",
+    "#import",
+    "#include",
+    "#line",
     "#pragma",
+    "#undef",
+    "#using",
 ]
 
-PREDEFINED_CONSTANT = [
-    "__LINE__",
-    "__FILE__",
+
+PREDEFINED_MACROS = (
+    "__cplusplus",
     "__DATE__",
-    "__TIME__",
+    "__FILE__",
+    "__LINE__",
     "__STDC__",
-]
+    "__STDC_HOSTED__",
+    "__STDC_NO_ATOMICS__",
+    "__STDC_NO_COMPLEX__",
+    "__STDC_NO_THREADS__",
+    "__STDC_NO_VLA__",
+    "__STDC_VERSION__",
+    "__STDCPP_THREADS__",
+    "__TIME__",
+)
 
 
 class CType:
@@ -152,47 +197,39 @@ class Completions:
         if not self.ctype:
             return []
 
-        # keyword shared both C and C++
-        for item in C_KEYWORDS:
-            yield sublime.CompletionItem(trigger=item, kind=sublime.KIND_KEYWORD)
-
         # keyword for C source and header file
         if self.ctype == CType.C:
-            for item in C99_KEYWORDS:
-                yield sublime.CompletionItem(
-                    trigger=item, kind=sublime.KIND_KEYWORD, details="C99"
+            yield from (
+                sublime.CompletionItem(
+                    trigger=item, kind=sublime.KIND_KEYWORD, details=c_ver
                 )
-
-            for item in C11_KEYWORDS:
-                yield sublime.CompletionItem(
-                    trigger=item, kind=sublime.KIND_KEYWORD, details="C11"
-                )
+                for (item, c_ver) in C_KEYWORDS
+            )
 
         # keyword for C++ source and header file
         if self.ctype == CType.CPP:
-            for item in CPP_KEYWORDS:
-                yield sublime.CompletionItem(trigger=item, kind=sublime.KIND_KEYWORD)
-
-            for item in CPP11_KEYWORDS:
-                yield sublime.CompletionItem(
-                    trigger=item,
-                    completion=item + " ",
-                    kind=sublime.KIND_KEYWORD,
-                    details="CPP11",
+            yield from (
+                sublime.CompletionItem(
+                    trigger=item, kind=sublime.KIND_KEYWORD, details=cpp_ver,
                 )
+                for (item, cpp_ver) in CPP_KEYWORDS
+            )
 
-        for item in PREPROCESSOR_DIRECTIVES:
-            yield sublime.CompletionItem(
+        yield from (
+            sublime.CompletionItem(
                 trigger=item,
-                completion=item + " ",
                 kind=sublime.KIND_NAVIGATION,
                 details="Preprocessor directives",
             )
+            for item in PREPROCESSOR_DIRECTIVES
+        )
 
-        for item in PREDEFINED_CONSTANT:
-            yield sublime.CompletionItem(
-                trigger=item, kind=sublime.KIND_VARIABLE, details="Predefined constant"
+        yield from (
+            sublime.CompletionItem(
+                trigger=item, kind=sublime.KIND_VARIABLE, details="Predefined macros"
             )
+            for item in PREDEFINED_MACROS
+        )
 
     def to_sublime(self):
         def by_trigger(c: sublime.CompletionItem):
