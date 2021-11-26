@@ -5,18 +5,26 @@
 
 
 import json
+import logging
 import os
 import re
 import subprocess
 import threading
+import abc
 
 from io import BytesIO, SEEK_SET, SEEK_END
-from queue import Queue
-from typing import Union
+from typing import Callable, Optional, Union
+
+LOGGER = logging.getLogger(__name__)
+# LOGGER.setLevel(logging.DEBUG)  # module logging level
+STREAM_HANDLER = logging.StreamHandler()
+LOG_TEMPLATE = "%(levelname)s %(asctime)s %(filename)s:%(lineno)s  %(message)s"
+STREAM_HANDLER.setFormatter(logging.Formatter(LOG_TEMPLATE))
+LOGGER.addHandler(STREAM_HANDLER)
 
 
-class JSONTransport:
-    """JSON transport message
+class JSONMessage:
+    """JSON message
 
     Params:
     - data : mapped data
@@ -28,6 +36,14 @@ class JSONTransport:
 
     def __repr__(self):
         return str(self.data)
+
+    @property
+    def id_(self):
+        return self.data.get("id")
+
+    @id_.setter
+    def id_(self, value):
+        self.data["id"] = value
 
     def _to_string(self):
         return json.dumps(self.data)
@@ -41,51 +57,115 @@ class JSONTransport:
         with BytesIO() as buf:
             message = self._to_string().encode("utf-8")
             buf.write(str.encode("Content-Length: %s\r\n" % len(message), "ascii"))
-            buf.write(b"\r\n")
+            buf.write(b"\r\n")  # content separator
             buf.write(message)
             return buf.getvalue()
 
     @classmethod
     def from_string(cls, message: str):
-        raise NotImplementedError("from_string not implemented")
+        """new JSONMessage from string"""
+        return cls(json.loads(message))
+
+    def is_request(self) -> bool:
+        """is request message"""
+        return "method" in self.data
+
+    def is_response(self) -> bool:
+        """is response message"""
+        return "result" in self.data or "error" in self.data
 
 
-class RequestMessage(JSONTransport):
+class RequestMessage(JSONMessage):
     """Request message
 
     Params:
-    - id : Union[int,str]
+    - id : Optional[Union[int,str]], should not defined for notification
     - method : str
-    - params : Optional[dict]
+    - params : Optional[dict], should be json object or {}
     """
 
     def __init__(self, id_: int, method: str, params: dict = None):
-        if not params:
-            params = {}
-        super().__init__({"id": id_, "method": method, "params": params})
+        data = {"method": method, "params": params or {}}
+        if id_ is not None:
+            data["id"] = id_
+
+        super().__init__(data)
+
+    @property
+    def method(self):
+        return self.data["method"]
+
+    @method.setter
+    def method(self, value):
+        self.data["method"] = value
+
+    @property
+    def params(self):
+        return self.data["params"]
+
+    @params.setter
+    def params(self, value):
+        self.data["params"] = value
 
     @classmethod
     def from_string(cls, message: str):
+        """new RequestMessage from string"""
         decoded = json.loads(message)
-        return cls(decoded["id"], decoded["method"], decoded.get("params"))
+        return cls(decoded.get("id"), decoded["method"], decoded.get("params"))
+
+    @classmethod
+    def from_json_transport(cls, message: JSONMessage):
+        """new RequestMessage from JSONMessage"""
+        data = message.data
+        return cls(data.get("id"), data["method"], data.get("params"))
 
 
-class ResponseMessage(JSONTransport):
+class ResponseMessage(JSONMessage):
     """Response message
 
     Params:
-    - id : Union[int, str]
-    - result : Optional[dict, list]
-    - error : Optional[dict]
+    - id : Union[int, str], should be defined for result
+    - result : Optional[dict, list], should not defined if error
+    - error : Optional[dict], should not defined if result available
     """
 
     def __init__(self, id_: int, result: object = None, error: dict = None):
-        super().__init__({"id": id_, "result": result, "error": error})
+        data = {"id": id_}
+        if error:
+            data["error"] = error
+        else:
+            # result only defined if no error
+            data["result"] = result
+
+        super().__init__(data)
+
+    @property
+    def result(self):
+        return self.data.get("result")
+
+    @result.setter
+    def result(self, value):
+        self.data["result"] = value
+
+    @property
+    def error(self):
+        return self.data.get("error")
+
+    @error.setter
+    def error(self, value):
+        self.data["error"] = value
 
     @classmethod
     def from_string(cls, message: str):
+        """new ResponseMessage from string"""
         decoded = json.loads(message)
-        return cls(decoded["id"], decoded.get("result"), decoded.get("error"))
+        return cls(decoded.get("id"), decoded.get("result"), decoded.get("error"))
+
+    @classmethod
+    def from_json_transport(cls, message: JSONMessage):
+        """new ResponseMessage from JSONMessage"""
+        data = message.data
+        return cls(data.get("id"), data.get("result"), data.get("error"))
 
 
 class InvalidMessage(ValueError):
@@ -107,9 +187,10 @@ class Stream:
 
     def write(self, data: bytes) -> None:
         """write stream data"""
+
         with self._lock:
+            # write always on end of file
             self.buffer.seek(0, SEEK_END)
-            # print("write cur:", self.buffer.tell())
             self.buffer.write(data)
 
     def _get_content_length(self, buf: BytesIO):
@@ -139,11 +220,19 @@ class Stream:
         raise InvalidMessage("unable find Content-Length")
 
     def read(self) -> bytes:
-        """read stream data"""
+        """read stream data
+
+        Return:
+            content or empty bytes
+
+        Raises:
+            InvalidMessage
+            EOFError
+        """
 
         with self._lock:
 
-            # in reading, _read_cur always point to beginning of header
+            # in reading, read always start from beginning of header
             self.buffer.seek(0, SEEK_SET)
 
             _content_length = self._get_content_length(self.buffer)
@@ -151,7 +240,8 @@ class Stream:
 
             recv_len = len(content)
             if recv_len < _content_length:
-                # print("waiting content")
+                # wait content
+                LOGGER.debug("content incomplete, wait next")
                 return b""
 
             elif recv_len > _content_length:
@@ -160,10 +250,8 @@ class Stream:
                     % (_content_length, recv_len)
                 )
 
-            # print("content:", content)
-
             # tell current cursor
-            _read_cur = self.buffer.tell()
+            read_cur = self.buffer.tell()
 
             # replacement buffer
             temp = BytesIO()
@@ -171,7 +259,7 @@ class Stream:
             # check if any left in buffer
             tail = self.buffer.readline()
             if tail:
-                self.buffer.seek(_read_cur, SEEK_SET)
+                self.buffer.seek(read_cur, SEEK_SET)
                 temp.write(self.buffer.read())
 
             # replace buffer
@@ -180,109 +268,175 @@ class Stream:
             return content
 
 
-class Context:
-    """process context"""
+class Transport(abc.ABC):
+    """Abstraction transport"""
 
-    def __init__(self):
+    @abc.abstractmethod
+    def __init__(self, process_cmd: list):
+        """init"""
 
-        self.process: subprocess.Popen = None
-        self.stdout_thread: threading.Thread = None
-        self.stderr_thread: threading.Thread = None
+    @abc.abstractmethod
+    def register_command(self, method: str, handler: Callable[[ResponseMessage], None]):
+        """register command handler"""
 
-        self._queue = Queue()
+    @abc.abstractmethod
+    def notify(self, message: RequestMessage):
+        """notify message to server, not wait response"""
+
+    @abc.abstractmethod
+    def request(self, message: RequestMessage):
+        """request to server, wait response"""
+
+    @abc.abstractmethod
+    def exec_command(self, method: str, params: Optional[Union[ResponseMessage, dict]]):
+        """exec command triggered by server message"""
+
+    @abc.abstractmethod
+    def listen(self):
+        """listen emitted message from server"""
+
+    @abc.abstractmethod
+    def exit(self):
+        """exit process and terminate server"""
+
+
+class StandardIO(Transport):
+    """standard io Transport implementation"""
+
+    def __init__(self, process_cmd: list):
+
+        # init process
+        self.server_process: subprocess.Popen = self._init_process(process_cmd)
+
+        self.command_map = {}
         self._stream = Stream()
 
-        self._start_clangd()
+        # listener
+        self.stdout_thread: threading.Thread = None
+        self.stderr_thread: threading.Thread = None
         self.listen()
 
-    def _start_clangd(self):
-        """clangd process"""
+        # request
+        self.request_map = {}
 
-        self.process = subprocess.Popen(
-            ["clangd", "--log=info", "--offset-encoding=utf-8"],
+    def register_command(self, method: str, handler: Callable[[ResponseMessage], None]):
+        LOGGER.info("register_command")
+        self.command_map[method] = handler
+
+    def _init_process(self, command):
+        LOGGER.info("_init_process")
+
+        LOGGER.debug("command: %s", command)
+        process = subprocess.Popen(
+            # ["clangd", "--log=info", "--offset-encoding=utf-8"],
+            command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=os.environ,
-            bufsize=0,
+            bufsize=0,  # no buffering
         )
+        return process
 
-    def write(self, message: Union[bytes, JSONTransport]):
-        """write message to stream"""
+    def _write(self, message: JSONMessage):
+        LOGGER.info("_write to stdin")
+        bmessage = message.to_bytes()
+        LOGGER.debug("write:\n%s", bmessage)
+        self.server_process.stdin.write(bmessage)
+        self.server_process.stdin.flush()
 
-        stdin: BytesIO = self.process.stdin
+    def notify(self, message: RequestMessage):
+        LOGGER.info("notify")
+        self._write(message)
 
-        if isinstance(message, JSONTransport):
-            message = message.to_bytes()
+    def request(self, message: RequestMessage):
+        LOGGER.info("request")
+        self.request_map[message.id_] = message.method
+        self._write(message)
 
-        stdin.write(message)
-        stdin.flush()
+    def exec_command(self, method: str, params: object):
+        LOGGER.info("exec_command")
+        try:
+            handle = self.command_map[method]
+        except KeyError as err:
+            LOGGER.debug("unregistered command: %s", err)
 
-    def exec_command(self, method: str, params: Union[dict, list, None]):
-        """exec client commands"""
-        pass
+        else:
+            try:
+                handle(params)
+            except Exception as err:
+                LOGGER.debug("exec_command error: \n%s", err)
 
-    def listen(self):
-        """listen stream"""
-
-        self.stdout_thread = threading.Thread(
-            target=self._listen_stdout, args=(self.process.stdout,), daemon=True
-        )
-        self.stderr_thread = threading.Thread(
-            target=self._listen_stderr, args=(self.process.stderr,), daemon=True
-        )
-        self.queue_thread = threading.Thread(target=self._handle_queue, daemon=True)
-        self.stdout_thread.start()
-        self.stderr_thread.start()
-        self.queue_thread.start()
-
-    def exit(self):
-        self.process.kill()
-        self.stdout_thread.join()
-        self.stderr_thread.join()
-        self.queue_thread.join()
-
-    def __del__(self):
-        self.exit()
-
-    def _listen_stdout(self, stdout: BytesIO):
+    def _handle_stdout_message(self):
+        LOGGER.info("_handle_stdout_message")
         while True:
-            line = stdout.read(2048)
-            if not line:
-                break
-
-            self._queue.put(line)
-
-        # print("exit loop stdout")
-
-    def _listen_stderr(self, stderr: BytesIO):
-        while True:
-            line = stderr.readline()
-            # print("stderr line:", line)
-            if not line:
-                break
-
-        # print("exit loop stderr")
-
-    def _handle_queue(self):
-        while True:
-            line = self._queue.get()
-            # print("queue line:", line)
-
-            self._stream.write(line)
-            self._handle_message()
-
-    def _handle_message(self):
-        while True:
-            # print(self._stream.read())
             try:
                 content = self._stream.read()
             except EOFError:
+                LOGGER.debug("EOF")
                 break
 
             if not content:
                 break
 
-            print("message:", content)
-            rm = ResponseMessage.from_string(content.decode("utf-8"))
-            print(rm)
+            message = JSONMessage.from_string(content.decode("utf-8"))
+            LOGGER.debug("message: %s", message)
+
+            if message.is_response():
+                try:
+                    method = self.request_map.pop(message.id_)
+
+                except KeyError as err:
+                    LOGGER.debug("invalid response id: %s", str(err))
+                    LOGGER.debug("registered request: %s", self.request_map)
+
+                else:
+                    response = ResponseMessage.from_json_transport(message)
+                    self.exec_command(method, response)
+
+            elif message.is_request():
+                # exec server command
+                command = RequestMessage.from_json_transport(message)
+                self.exec_command(command.method, command.params)
+
+            else:
+                LOGGER.debug("invalid message: %s", message)
+
+    def _listen_stdout(self):
+        while True:
+            stdout = self.server_process.stdout
+            line = stdout.read(2048)
+            if not line:
+                break
+
+            LOGGER.debug("line: %s", line)
+            self._stream.write(line)
+            self._handle_stdout_message()
+
+    def _listen_stderr(self):
+        while True:
+            stderr = self.server_process.stderr
+            line = stderr.read(2048)
+            if not line:
+                break
+
+            LOGGER.debug("stderr:\n%s", line.decode())
+
+    def listen(self):
+        LOGGER.info("listen")
+        self.stdout_thread = threading.Thread(target=self._listen_stdout, daemon=True)
+        self.stderr_thread = threading.Thread(target=self._listen_stderr, daemon=True)
+        self.stdout_thread.start()
+        self.stderr_thread.start()
+
+    def exit(self):
+        """exit process"""
+
+        LOGGER.info("exit")
+
+        self.server_process.kill()
+        self.stdout_thread.join()
+        self.stderr_thread.join()
+
+    def __del__(self):
+        self.exit()
