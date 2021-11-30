@@ -427,8 +427,12 @@ class StandardIO(Transport):
             line = stderr.read(2048)
             if not line:
                 break
-
-            LOGGER.debug("stderr:\n%s", line.decode())
+            try:
+                stderr_message = line.decode()
+            except UnicodeDecodeError as err:
+                LOGGER.error(err)
+            else:
+                LOGGER.debug("stderr:\n%s", stderr_message)
 
     def listen(self):
         LOGGER.info("listen")
