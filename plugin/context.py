@@ -59,6 +59,7 @@ class JSONMessage:
             buf.write(str.encode("Content-Length: %s\r\n" % len(message), "ascii"))
             buf.write(b"\r\n")  # content separator
             buf.write(message)
+            buf.write(os.linesep.encode("ascii"))
             return buf.getvalue()
 
     @classmethod
@@ -326,6 +327,12 @@ class StandardIO(Transport):
     def _init_process(self, command):
         LOGGER.info("_init_process")
 
+        startupinfo = None
+        if os.name == "nt":
+            # if on Windows, hide process window
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.SW_HIDE | subprocess.STARTF_USESHOWWINDOW
+
         LOGGER.debug("command: %s", command)
         process = subprocess.Popen(
             # ["clangd", "--log=info", "--offset-encoding=utf-8"],
@@ -335,6 +342,7 @@ class StandardIO(Transport):
             stderr=subprocess.PIPE,
             env=os.environ,
             bufsize=0,  # no buffering
+            startupinfo=startupinfo,
         )
         return process
 
