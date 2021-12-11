@@ -1,9 +1,9 @@
 """this module handle commands to Sublime Text"""
 
-import html
 import logging
 import os
 import queue
+import re
 import threading
 
 # from functools import wraps
@@ -331,23 +331,6 @@ class CompletionList(list):
         return cls(completions)
 
 
-class PopupContent(str):
-    """PopupContent"""
-
-    @classmethod
-    def from_plaintext(cls, content):
-        """from plain text"""
-
-        if not content:
-            return cls("")
-
-        content = html.escape(content, quote=False)
-        content = content.replace("\n", "<br/>")
-        content = content.replace("\t", "&nbsp;&nbsp;")
-        content = "<div><p>%s</p></div>" % content
-        return cls(content)
-
-
 _VIEW: sublime.View = None
 
 
@@ -405,20 +388,8 @@ class ViewCommand:
             location = self.view.text_point(location[0], location[1])
 
         LOGGER.debug(location)
-        if markup_kind == "markdown":
-            # FIXME: parse markdown
-            content = PopupContent.from_plaintext(content)
-        else:
-            # default treat as plain text
-            content = PopupContent.from_plaintext(content)
-
-        LOGGER.debug("content: %s, location: %s", content, location)
-
-        self.view.show_popup(
-            content=content,
-            location=location,
-            max_width=1024,
-            flags=sublime.HIDE_ON_MOUSE_MOVE_AWAY,
+        self.view.run_command(
+            "ctools_markdown_popup", {"content": content, "location": location}
         )
 
     def apply_document_change(self, changes: dict):
@@ -446,8 +417,7 @@ class ClientHandler:
         LOGGER.info("_hide_completion")
         if character in self.completion_commit_character:
             view_command = ViewCommand.from_path(self.active_file)
-            if view_command.view.is_auto_complete_visible():
-                hide_completion(view_command.view)
+            hide_completion(view_command.view)
 
     def shutdown_server(self):
         LOGGER.debug("shutdown_server")
@@ -485,11 +455,14 @@ class ClientHandler:
             LOGGER.error(params.error)
 
         contents = params.result["contents"]["value"]
+        kind = params.result["contents"]["kind"]
         start = params.result["range"]["start"]
         location = (start["line"], start["character"])
 
+        LOGGER.debug("markup kind: %s", kind)
+
         view_command = ViewCommand.from_path(self.active_file)
-        view_command.show_popup(contents, location)
+        view_command.show_popup(contents, location, markup_kind=kind)
 
     def _handle_textDocument_formatting(self, params: context.ResponseMessage):
         LOGGER.info("_handle_textDocument_formatting")
@@ -517,6 +490,7 @@ class ClientHandler:
     def _textDocument_publishDiagnostics(self, params: dict):
         LOGGER.info("_textDocument_publishDiagnostics")
 
+        LOGGER.debug(params)
         diagnostics = params["diagnostics"]
         file_name = DocumentURI(params["uri"]).to_path()
         view_command = ViewCommand.from_path(file_name)
@@ -592,7 +566,16 @@ class ClientContext(ClientHandler):
 
         LOGGER.info("_cmd_initialize")
 
-        params = {}
+        params = {
+            "capabilities": {
+                "textDocument": {
+                    "hover": {
+                        "contentFormat": ["markdown", "plaintext"],
+                        "dynamicRegistration": True,
+                    },
+                }
+            }
+        }
         self.transport.request(
             context.RequestMessage(self.request_id(), "initialize", params)
         )
@@ -832,6 +815,8 @@ def workspace_folder(view: sublime.View):
 # FIXME: CURRENTLY ONLY HANDLE CPP
 class EventListener(sublime_plugin.EventListener):
     """Handle event emitted by view and window"""
+
+    indentifier_pattern = re.compile(r"[a-zA-Z_]\w*")
 
     def on_query_completions(
         self, view: sublime.View, prefix: str, locations: List[int]
