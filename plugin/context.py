@@ -366,8 +366,10 @@ class StandardIO(Transport):
         LOGGER.info("exec_command")
         try:
             handle = self.command_map[method]
-        except KeyError as err:
-            LOGGER.debug("unregistered command: %s", err)
+        except KeyError:
+            LOGGER.error(
+                "unregistered command: %s", {"command": method, "params": params}
+            )
 
         else:
             try:

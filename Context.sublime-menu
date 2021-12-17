@@ -1,0 +1,8 @@
+[
+	{
+		"caption" : "Format Code",
+		"mnemonic" : "F",
+		"id" : "ctools",
+		"command" : "ctools_document_formatting",
+	}
+]
