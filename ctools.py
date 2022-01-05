@@ -80,7 +80,7 @@ class CompletionList(sublime.CompletionList):
 
         completions = [
             sublime.CompletionItem(
-                trigger=completion["insertText"].strip('">')
+                trigger=completion["filterText"].strip('">')
                 if completion["kind"] == 17
                 else completion["insertText"],
                 annotation=completion["label"].strip('">')
@@ -92,7 +92,7 @@ class CompletionList(sublime.CompletionList):
                 completion_format=sublime.COMPLETION_FORMAT_SNIPPET,
                 kind=_KIND_MAP.get(completion["kind"], sublime.KIND_AMBIGUOUS),
             )
-            for completion in completion_items
+            for completion in sorted(completion_items, key=lambda item: item["score"])
         ]
 
         return cls(
@@ -300,7 +300,6 @@ class ViewCommand:
     """commands to active view"""
 
     def __init__(self):
-        self.file_name = ""
         self.window: sublime.Window = sublime.active_window()
         self.view: sublime.View = self.window.active_view()
 
@@ -318,7 +317,6 @@ class ViewCommand:
         if self.view and self.view.file_name() == file_name:
             return
 
-        self.file_name = file_name
         self.window = sublime.active_window()
 
         view = self.window.find_open_file(file_name)
@@ -405,8 +403,8 @@ class ViewCommand:
         self.view.run_command("ctools_apply_document_change", {"changes": changes})
 
     def apply_diagnostics(self, file_name: str, diagnostics_item: List[dict]):
-        if file_name != self.file_name:
-            LOGGER.debug("invalid view, want %s, active %s", file_name, self.file_name)
+        if file_name != self.view.file_name():
+            LOGGER.debug("invalid view, want %s, active %s", file_name, self.view.file_name())
             return
 
         LOGGER.debug("apply diagnostics to: %s", file_name)
@@ -416,6 +414,7 @@ class ViewCommand:
         self.diagnostics_map = diagnostics.message_map
 
     def clear_diagnostics(self):
+        LOGGER.debug("clear_diagnostics to %s", self.view.file_name())
         Diagnostics(self.view).erase_highlight()
         self.diagnostics_map = {}
 
@@ -601,6 +600,7 @@ class LSPClientListener:
         LOGGER.info("_textDocument_publishDiagnostics")
 
         diagnostics = params["diagnostics"]
+        LOGGER.debug(diagnostics)
         if not diagnostics:
             VIEW_COMMAND.clear_diagnostics()
             return
