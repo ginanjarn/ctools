@@ -3,170 +3,77 @@
 - read and write are separate process
 """
 
-
+import abc
 import json
 import logging
 import os
 import re
 import subprocess
 import threading
-import abc
-
-from io import BytesIO
 from typing import Callable, Optional, Union
 
+
 LOGGER = logging.getLogger(__name__)
-# LOGGER.setLevel(logging.DEBUG)  # module logging level
+LOGGER.setLevel(logging.DEBUG)  # module logging level
 STREAM_HANDLER = logging.StreamHandler()
 LOG_TEMPLATE = "%(levelname)s %(asctime)s %(filename)s:%(lineno)s  %(message)s"
 STREAM_HANDLER.setFormatter(logging.Formatter(LOG_TEMPLATE))
 LOGGER.addHandler(STREAM_HANDLER)
 
 
-class JSONMessage:
-    """JSON message
+class JSONRPCMessage(dict):
+    """json rpc message handler"""
 
-    Params:
-    - data : mapped data
-    """
+    def __init__(self, **kwargs):
+        super().__init__({"jsonrpc": "2.0"})
+        self.update(kwargs)
 
-    def __init__(self, data: dict):
-        data.update({"jsonrpc": "2.0"})
-        self.data = data
+    def __getattr__(self, key, default=None):
+        return self.get(key)
 
-    def __repr__(self):
-        return str(self.data)
-
-    @property
-    def id_(self):
-        return self.data.get("id")
-
-    @id_.setter
-    def id_(self, value):
-        self.data["id"] = value
-
-    def _to_string(self):
-        return json.dumps(self.data)
-
-    def to_string(self):
+    def to_str(self):
         """dump to string"""
-        return self._to_string()
+        return json.dumps(self)
 
     def to_bytes(self):
         """dump to bytes"""
-        with BytesIO() as buf:
-            message = self._to_string().encode("utf-8")
-            buf.write(str.encode("Content-Length: %s\r\n" % len(message), "ascii"))
-            buf.write(b"\r\n")  # content separator
-            buf.write(message)
-            buf.write(os.linesep.encode("ascii"))
-            return buf.getvalue()
+
+        str_message = self.to_str()
+        encoded_message = str_message.encode("utf-8")
+        header = "Content-Length: %d\r\n" % (len(encoded_message))
+        return b"\r\n".join([header.encode("ascii"), encoded_message])
 
     @classmethod
-    def from_string(cls, message: str):
-        """new JSONMessage from string"""
-        return cls(json.loads(message))
-
-    def is_request(self) -> bool:
-        """is request message"""
-        return "method" in self.data
-
-    def is_response(self) -> bool:
-        """is response message"""
-        return "result" in self.data or "error" in self.data
-
-
-class RequestMessage(JSONMessage):
-    """Request message
-
-    Params:
-    - id : Optional[Union[int,str]], should not defined for notification
-    - method : str
-    - params : Optional[dict], should be json object or {}
-    """
-
-    def __init__(self, id_: int, method: str, params: dict = None):
-        data = {"method": method, "params": params or {}}
-        if id_ is not None:
-            data["id"] = id_
-
-        super().__init__(data)
-
-    @property
-    def method(self):
-        return self.data["method"]
-
-    @method.setter
-    def method(self, value):
-        self.data["method"] = value
-
-    @property
-    def params(self):
-        return self.data["params"]
-
-    @params.setter
-    def params(self, value):
-        self.data["params"] = value
+    def from_str(cls, message):
+        """new message from string"""
+        return cls(**json.loads(message))
 
     @classmethod
-    def from_string(cls, message: str):
-        """new RequestMessage from string"""
-        decoded = json.loads(message)
-        return cls(decoded.get("id"), decoded["method"], decoded.get("params"))
+    def request(cls, id_, method, params=None):
+        """new request message"""
+
+        params = params or {}
+        return cls(**{"id": id_, "method": method, "params": params})
 
     @classmethod
-    def from_json_transport(cls, message: JSONMessage):
-        """new RequestMessage from JSONMessage"""
-        data = message.data
-        return cls(data.get("id"), data["method"], data.get("params"))
+    def notification(cls, method, params=None):
+        """new notification message"""
 
+        params = params or {}
+        # notification message not define id
+        return cls(method=method, params=params)
 
-class ResponseMessage(JSONMessage):
-    """Response message
+    @classmethod
+    def response(cls, id_, *, result=None, error=None):
+        """new response message"""
 
-    Params:
-    - id : Union[int, str], should be defined for result
-    - result : Optional[dict, list], should not defined if error
-    - error : Optional[dict], should not defined if result available
-    """
+        resp = {"id": id_, "result": result}
 
-    def __init__(self, id_: int, result: object = None, error: dict = None):
-        data = {"id": id_}
+        # error only defined if error available
         if error:
-            data["error"] = error
-        else:
-            # result only defined if no error
-            data["result"] = result
+            resp["error"] = error
 
-        super().__init__(data)
-
-    @property
-    def result(self):
-        return self.data.get("result")
-
-    @result.setter
-    def result(self, value):
-        self.data["result"] = value
-
-    @property
-    def error(self):
-        return self.data.get("error")
-
-    @error.setter
-    def error(self, value):
-        self.data["error"] = value
-
-    @classmethod
-    def from_string(cls, message: str):
-        """new ResponseMessage from string"""
-        decoded = json.loads(message)
-        return cls(decoded.get("id"), decoded.get("result"), decoded.get("error"))
-
-    @classmethod
-    def from_json_transport(cls, message: JSONMessage):
-        """new ResponseMessage from JSONMessage"""
-        data = message.data
-        return cls(data.get("id"), data.get("result"), data.get("error"))
+        return cls(**resp)
 
 
 class InvalidMessage(ValueError):
@@ -238,19 +145,19 @@ class Transport(abc.ABC):
         """init"""
 
     @abc.abstractmethod
-    def register_command(self, method: str, handler: Callable[[ResponseMessage], None]):
+    def register_command(self, method: str, handler: Callable[[JSONRPCMessage], None]):
         """register command handler"""
 
     @abc.abstractmethod
-    def notify(self, message: RequestMessage):
+    def notify(self, message: JSONRPCMessage):
         """notify message to server, not wait response"""
 
     @abc.abstractmethod
-    def request(self, message: RequestMessage):
+    def request(self, message: JSONRPCMessage):
         """request to server, wait response"""
 
     @abc.abstractmethod
-    def exec_command(self, method: str, params: Optional[Union[ResponseMessage, dict]]):
+    def exec_command(self, method: str, params: Optional[Union[JSONRPCMessage, dict]]):
         """exec command triggered by server message"""
 
     @abc.abstractmethod
@@ -280,7 +187,7 @@ class StandardIO(Transport):
         # request
         self.request_map = {}
 
-    def register_command(self, method: str, handler: Callable[[ResponseMessage], None]):
+    def register_command(self, method: str, handler: Callable[[JSONRPCMessage], None]):
         LOGGER.info("register_command")
         self.command_map[method] = handler
 
@@ -306,7 +213,7 @@ class StandardIO(Transport):
         )
         return process
 
-    def _write(self, message: JSONMessage):
+    def _write(self, message: JSONRPCMessage):
         LOGGER.info("_write to stdin")
 
         bmessage = message.to_bytes()
@@ -314,15 +221,15 @@ class StandardIO(Transport):
         self.server_process.stdin.write(bmessage)
         self.server_process.stdin.flush()
 
-    def notify(self, message: RequestMessage):
+    def notify(self, message: JSONRPCMessage):
         LOGGER.info("notify")
 
         self._write(message)
 
-    def request(self, message: RequestMessage):
+    def request(self, message: JSONRPCMessage):
         LOGGER.info("request")
 
-        self.request_map[message.id_] = message.method
+        self.request_map[message.id] = message.method
         self._write(message)
 
     def exec_command(self, method: str, params: object):
@@ -342,28 +249,27 @@ class StandardIO(Transport):
     def _process_stdout_message(self, content: str):
         """process stdout message"""
 
-        message = JSONMessage.from_string(content)
+        message = JSONRPCMessage.from_str(content)
         LOGGER.debug("message: %s", message)
 
-        if message.is_response():
+        if message.method:
+            # exec server request
+            self.exec_command(message.method, message.params)
+
+        elif message.id:
+            # exec response map to request id
             try:
-                method = self.request_map.pop(message.id_)
+                method = self.request_map.pop(message.id)
 
             except KeyError as err:
-                LOGGER.debug("request id not found: '%s'", str(err))
+                LOGGER.error("request id not found: '%s'", err)
                 LOGGER.debug("all request: %s", self.request_map)
 
             else:
                 # FIXME: handle this response:
                 #     {'id': 6, 'jsonrpc': '2.0', 'result': None}
 
-                response = ResponseMessage.from_json_transport(message)
-                self.exec_command(method, response)
-
-        elif message.is_request():
-            # exec server command
-            command = RequestMessage.from_json_transport(message)
-            self.exec_command(command.method, command.params)
+                self.exec_command(method, message)
 
         else:
             LOGGER.debug("invalid message: %s", message)
@@ -403,14 +309,11 @@ class StandardIO(Transport):
         while True:
             stderr = self.server_process.stderr
             line = stderr.read(2048)
-            if not line:
-                break
+
             try:
-                stderr_message = line.decode()
+                LOGGER.debug("stderr:\n%s", line)
             except UnicodeDecodeError as err:
                 LOGGER.error(err)
-            else:
-                LOGGER.debug("stderr:\n%s", stderr_message)
 
     def listen(self):
         LOGGER.info("listen")

@@ -404,7 +404,9 @@ class ViewCommand:
 
     def apply_diagnostics(self, file_name: str, diagnostics_item: List[dict]):
         if file_name != self.view.file_name():
-            LOGGER.debug("invalid view, want %s, active %s", file_name, self.view.file_name())
+            LOGGER.debug(
+                "invalid view, want %s, active %s", file_name, self.view.file_name()
+            )
             return
 
         LOGGER.debug("apply diagnostics to: %s", file_name)
@@ -514,7 +516,7 @@ class LSPClientListener:
         LOGGER.debug("shutdown_server")
         self.transport.exit()
 
-    def _handle_initialize(self, params: context.ResponseMessage):
+    def _handle_initialize(self, params: context.JSONRPCMessage):
         LOGGER.info("_handle_initialize")
 
         LOGGER.debug("params: %s", params)
@@ -530,15 +532,15 @@ class LSPClientListener:
         ]
 
         # notify if initialized
-        self.transport.notify(context.RequestMessage(None, "initialized"))
+        self.transport.notify(context.JSONRPCMessage.notification("initialized"))
 
-    def _handle_textDocument_completion(self, params: context.ResponseMessage):
+    def _handle_textDocument_completion(self, params: context.JSONRPCMessage):
         LOGGER.info("_handle_textDocument_completion")
 
         completion_items = params.result["items"]
         VIEW_COMMAND.show_completions(completion_items)
 
-    def _handle_textDocument_hover(self, params: context.ResponseMessage):
+    def _handle_textDocument_hover(self, params: context.JSONRPCMessage):
         LOGGER.info("_handle_textDocument_hover")
 
         if params.error:
@@ -553,25 +555,25 @@ class LSPClientListener:
 
         VIEW_COMMAND.show_popup(contents, location)
 
-    def _handle_textDocument_formatting(self, params: context.ResponseMessage):
+    def _handle_textDocument_formatting(self, params: context.JSONRPCMessage):
         LOGGER.info("_handle_textDocument_formatting")
 
         changes = params.result
         VIEW_COMMAND.apply_document_change(changes)
 
-    def _handle_textDocument_semanticTokens_full(self, params: context.ResponseMessage):
+    def _handle_textDocument_semanticTokens_full(self, params: context.JSONRPCMessage):
         LOGGER.info("_handle_textDocument_semanticTokens_full")
         LOGGER.debug(params)
 
-    def _handle_textDocument_documentLink(self, params: context.ResponseMessage):
+    def _handle_textDocument_documentLink(self, params: context.JSONRPCMessage):
         LOGGER.info("_handle_textDocument_documentLink")
         LOGGER.debug(params)
 
-    def _handle_textDocument_documentSymbol(self, params: context.ResponseMessage):
+    def _handle_textDocument_documentSymbol(self, params: context.JSONRPCMessage):
         LOGGER.info("_handle_textDocument_documentSymbol")
         LOGGER.debug(params)
 
-    def _handle_textDocument_codeAction(self, params: context.ResponseMessage):
+    def _handle_textDocument_codeAction(self, params: context.JSONRPCMessage):
         LOGGER.info("_handle_textDocument_codeAction")
         LOGGER.debug(params)
         # {
@@ -667,7 +669,7 @@ class LSPClientListener:
 
         self._apply_multiple_file_changes(changes)
 
-    def _textDocument_prepareRename(self, params: context.ResponseMessage):
+    def _textDocument_prepareRename(self, params: context.JSONRPCMessage):
         LOGGER.info("_textDocument_prepareRename")
         LOGGER.debug("params: %s", params)
 
@@ -683,7 +685,7 @@ class LSPClientListener:
 
         VIEW_COMMAND.input_rename(start["line"], start["character"], placeholder)
 
-    def _textDocument_rename(self, params: context.ResponseMessage):
+    def _textDocument_rename(self, params: context.JSONRPCMessage):
         LOGGER.info("textDocument_rename")
         LOGGER.debug("params: %s", params)
 
@@ -695,7 +697,7 @@ class LSPClientListener:
 
         self._apply_multiple_file_changes(changes)
 
-    def _textDocument_definition(self, params: context.ResponseMessage):
+    def _textDocument_definition(self, params: context.JSONRPCMessage):
         LOGGER.info("textDocument_definition")
         LOGGER.debug("params: %s", params)
         # {
@@ -713,7 +715,7 @@ class LSPClientListener:
         # }
         VIEW_COMMAND.goto(params.result)
 
-    def _textDocument_declaration(self, params: context.ResponseMessage):
+    def _textDocument_declaration(self, params: context.JSONRPCMessage):
         LOGGER.info("textDocument_declaration")
         LOGGER.debug("params: %s", params)
 
@@ -816,7 +818,7 @@ class ClientContext(LSPClientListener):
             }
         }
         self.transport.request(
-            context.RequestMessage(self.request_id(), "initialize", params)
+            context.JSONRPCMessage.request(self.request_id(), "initialize", params)
         )
 
     def textDocument_didOpen(self, path: str, source: str):
@@ -834,7 +836,7 @@ class ClientContext(LSPClientListener):
             }
         }
         self.transport.notify(
-            context.RequestMessage(None, "textDocument/didOpen", params)
+            context.JSONRPCMessage.notification("textDocument/didOpen", params)
         )
 
     def textDocument_didChange(self, path: str, changes: dict):
@@ -849,7 +851,7 @@ class ClientContext(LSPClientListener):
         }
         self._hide_completion(changes[0]["text"])
         self.transport.notify(
-            context.RequestMessage(None, "textDocument/didChange", params)
+            context.JSONRPCMessage.notification("textDocument/didChange", params)
         )
 
     def textDocument_didClose(self, path: str):
@@ -857,7 +859,7 @@ class ClientContext(LSPClientListener):
 
         params = {"textDocument": {"uri": DocumentURI.from_path(path)}}
         self.transport.notify(
-            context.RequestMessage(None, "textDocument/didClose", params)
+            context.JSONRPCMessage.notification("textDocument/didClose", params)
         )
 
     def textDocument_didSave(self, path: str):
@@ -865,7 +867,7 @@ class ClientContext(LSPClientListener):
 
         params = {"textDocument": {"uri": DocumentURI.from_path(path)}}
         self.transport.notify(
-            context.RequestMessage(None, "textDocument/didSave", params)
+            context.JSONRPCMessage.notification("textDocument/didSave", params)
         )
 
     def textDocument_completion(self, path: str, row: int, col: int):
@@ -877,7 +879,9 @@ class ClientContext(LSPClientListener):
             "textDocument": {"uri": DocumentURI.from_path(path)},
         }
         self.transport.request(
-            context.RequestMessage(self.request_id(), "textDocument/completion", params)
+            context.JSONRPCMessage.request(
+                self.request_id(), "textDocument/completion", params
+            )
         )
 
     def textDocument_hover(self, path: str, row: int, col: int):
@@ -887,7 +891,9 @@ class ClientContext(LSPClientListener):
             "textDocument": {"uri": DocumentURI.from_path(path)},
         }
         self.transport.request(
-            context.RequestMessage(self.request_id(), "textDocument/hover", params)
+            context.JSONRPCMessage.request(
+                self.request_id(), "textDocument/hover", params
+            )
         )
 
     def textDocument_formatting(self, path, tab_size=2):
@@ -897,14 +903,16 @@ class ClientContext(LSPClientListener):
             "textDocument": {"uri": DocumentURI.from_path(path)},
         }
         self.transport.request(
-            context.RequestMessage(self.request_id(), "textDocument/formatting", params)
+            context.JSONRPCMessage.request(
+                self.request_id(), "textDocument/formatting", params
+            )
         )
 
     def textDocument_semanticTokens_full(self, path: str):
         LOGGER.info("_cmd_textDocument_semanticTokens_full")
         params = {"textDocument": {"uri": DocumentURI.from_path(path),}}
         self.transport.request(
-            context.RequestMessage(
+            context.JSONRPCMessage.request(
                 self.request_id(), "textDocument/semanticTokens/full", params
             )
         )
@@ -913,7 +921,7 @@ class ClientContext(LSPClientListener):
         LOGGER.info("_cmd_textDocument_documentLink")
         params = {"textDocument": {"uri": DocumentURI.from_path(path),}}
         self.transport.request(
-            context.RequestMessage(
+            context.JSONRPCMessage.request(
                 self.request_id(), "textDocument/documentLink", params
             )
         )
@@ -922,7 +930,7 @@ class ClientContext(LSPClientListener):
         LOGGER.info("_cmd_textDocument_documentSymbol")
         params = {"textDocument": {"uri": DocumentURI.from_path(path),}}
         self.transport.request(
-            context.RequestMessage(
+            context.JSONRPCMessage.request(
                 self.request_id(), "textDocument/documentSymbol", params
             )
         )
@@ -941,12 +949,14 @@ class ClientContext(LSPClientListener):
         }
         LOGGER.debug("codeAction params: %s", params)
         self.transport.request(
-            context.RequestMessage(self.request_id(), "textDocument/codeAction", params)
+            context.JSONRPCMessage.request(
+                self.request_id(), "textDocument/codeAction", params
+            )
         )
 
     def workspace_executeCommand(self, params: dict):
         self.transport.request(
-            context.RequestMessage(
+            context.JSONRPCMessage.request(
                 self.request_id(), "workspace/executeCommand", params
             )
         )
@@ -957,7 +967,7 @@ class ClientContext(LSPClientListener):
             "textDocument": {"uri": DocumentURI.from_path(path)},
         }
         self.transport.request(
-            context.RequestMessage(
+            context.JSONRPCMessage.request(
                 self.request_id(), "textDocument/prepareRename", params
             )
         )
@@ -969,7 +979,9 @@ class ClientContext(LSPClientListener):
             "textDocument": {"uri": DocumentURI.from_path(path)},
         }
         self.transport.request(
-            context.RequestMessage(self.request_id(), "textDocument/rename", params)
+            context.JSONRPCMessage.request(
+                self.request_id(), "textDocument/rename", params
+            )
         )
 
     def textDocument_definition(self, path, row, col):
@@ -978,7 +990,9 @@ class ClientContext(LSPClientListener):
             "textDocument": {"uri": DocumentURI.from_path(path)},
         }
         self.transport.request(
-            context.RequestMessage(self.request_id(), "textDocument/definition", params)
+            context.JSONRPCMessage.request(
+                self.request_id(), "textDocument/definition", params
+            )
         )
 
     def textDocument_declaration(self, path, row, col):
@@ -987,7 +1001,7 @@ class ClientContext(LSPClientListener):
             "textDocument": {"uri": DocumentURI.from_path(path)},
         }
         self.transport.request(
-            context.RequestMessage(
+            context.JSONRPCMessage.request(
                 self.request_id(), "textDocument/declaration", params
             )
         )
