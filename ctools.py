@@ -78,22 +78,28 @@ class CompletionList(sublime.CompletionList):
 
         LOGGER.debug("completion_list: %s", completion_items)
 
-        completions = [
-            sublime.CompletionItem(
-                trigger=completion["filterText"].strip('">')
-                if completion["kind"] == 17
-                else completion["insertText"],
-                annotation=completion["label"].strip('">')
-                if completion["kind"] == 17
-                else completion["label"],
-                completion=completion["insertText"].strip('">')
-                if completion["kind"] == 17
-                else completion["insertText"],
-                completion_format=sublime.COMPLETION_FORMAT_SNIPPET,
-                kind=_KIND_MAP.get(completion["kind"], sublime.KIND_AMBIGUOUS),
-            )
-            for completion in sorted(completion_items, key=lambda item: item["score"])
-        ]
+        completions = (
+            [
+                sublime.CompletionItem(
+                    trigger=completion["filterText"].strip('">')
+                    if completion["kind"] == 17
+                    else completion["insertText"],
+                    annotation=completion["label"].strip('">')
+                    if completion["kind"] == 17
+                    else completion["label"],
+                    completion=completion["insertText"].strip('">')
+                    if completion["kind"] == 17
+                    else completion["insertText"],
+                    completion_format=sublime.COMPLETION_FORMAT_SNIPPET,
+                    kind=_KIND_MAP.get(completion["kind"], sublime.KIND_AMBIGUOUS),
+                )
+                for completion in sorted(
+                    completion_items, key=lambda item: item["score"]
+                )
+            ]
+            if completion_items
+            else []
+        )
 
         return cls(
             completions,
@@ -256,14 +262,20 @@ class ChangeItem:
 
 
 class DocumentChangeSync:
+    """Document change sync prevent multiple file changes at same time"""
+
+    _lock = threading.Lock()
+
     def __init__(self):
         self.busy = False
 
     def set_busy(self):
-        self.busy = True
+        with self._lock:
+            self.busy = True
 
     def set_finished(self):
-        self.busy = False
+        with self._lock:
+            self.busy = False
 
 
 DOCUMENT_CHANGE_SYNC = DocumentChangeSync()
@@ -303,6 +315,7 @@ class ViewCommand:
         self.window: sublime.Window = sublime.active_window()
         self.view: sublime.View = self.window.active_view()
 
+        # use queue because result should be invalidated after used
         self.completion_queue = queue.Queue(1)
         self.diagnostics_map = {}
 
@@ -312,8 +325,9 @@ class ViewCommand:
         except queue.Empty:
             return None
 
-    def open_file(self, file_name: str, focus_view=True):
+    def open_file(self, file_name: str):
         LOGGER.debug("open_file: %s", file_name)
+
         if self.view and self.view.file_name() == file_name:
             return
 
@@ -393,6 +407,8 @@ class ViewCommand:
         self.window.show_quick_panel(items, on_done, flags=sublime.MONOSPACE_FONT)
 
     def apply_document_change(self, changes: List[dict]):
+
+        # wait until view loaded
         while True:
             LOGGER.debug("loading %s", self.view.file_name())
             if self.view.is_loading():
@@ -412,11 +428,21 @@ class ViewCommand:
         LOGGER.debug("apply diagnostics to: %s", file_name)
         diagnostics = Diagnostics(self.view)
         diagnostics.set_diagnostics(diagnostics_item)
+
         LOGGER.debug("diagnostic message map: %s", diagnostics.message_map)
         self.diagnostics_map = diagnostics.message_map
 
-    def clear_diagnostics(self):
-        LOGGER.debug("clear_diagnostics to %s", self.view.file_name())
+    def clear_diagnostics(self, file_name):
+
+        active_file = self.view.file_name()
+        LOGGER.debug("clear_diagnostics to %s", file_name)
+
+        if active_file != file_name:
+            LOGGER.debug(
+                "clear error, want file_name %s, expected %s", file_name, active_file,
+            )
+            return
+
         Diagnostics(self.view).erase_highlight()
         self.diagnostics_map = {}
 
@@ -509,6 +535,7 @@ class LSPClientListener:
 
     def _hide_completion(self, character: str):
         LOGGER.info("_hide_completion")
+
         if character in self.completion_commit_character:
             VIEW_COMMAND.hide_completion()
 
@@ -576,39 +603,21 @@ class LSPClientListener:
     def _handle_textDocument_codeAction(self, params: context.JSONRPCMessage):
         LOGGER.info("_handle_textDocument_codeAction")
         LOGGER.debug(params)
-        # {
-        #     "id": 5,
-        #     "result": [
-        #         {
-        #             "arguments": [
-        #                 {
-        #                     "file": "file:///C:/Users/ginanjar/cproject/cpptools/main.cpp",
-        #                     "selection": {
-        #                         "end": {"character": 39, "line": 8},
-        #                         "start": {"character": 39, "line": 8},
-        #                     },
-        #                     "tweakID": "AddUsing",
-        #                 }
-        #             ],
-        #             "command": "clangd.applyTweak",
-        #             "title": "Add using-declaration for endl and remove qualifier",
-        #         }
-        #     ],
-        #     "jsonrpc": "2.0",
-        # }
         VIEW_COMMAND.show_code_action(params.result)
 
-    def _textDocument_publishDiagnostics(self, params: dict):
+    def _textDocument_publishDiagnostics(self, params: Dict[str, object]):
         LOGGER.info("_textDocument_publishDiagnostics")
 
         diagnostics = params["diagnostics"]
         LOGGER.debug(diagnostics)
-        if not diagnostics:
-            VIEW_COMMAND.clear_diagnostics()
-            return
 
         file_name = DocumentURI(params["uri"]).to_path()
-        VIEW_COMMAND.open_file(file_name, focus_view=False)
+
+        if not diagnostics:
+            VIEW_COMMAND.clear_diagnostics(file_name)
+            return
+
+        VIEW_COMMAND.open_file(file_name)
         VIEW_COMMAND.apply_diagnostics(file_name, diagnostics)
 
     def _window_workDoneProgress_create(self, params):
@@ -623,28 +632,29 @@ class LSPClientListener:
         LOGGER.info("_S_progress")
         LOGGER.debug(params)
 
-    def _apply_multiple_file_changes(self, file_changes: Dict[str, dict]):
-        LOGGER.info("_apply_multiple_file_changes")
+    def _apply_edit_changes(self, edit_changes: Dict[str, dict]):
+        LOGGER.info("_apply_edit_changes")
 
-        if not file_changes:
+        if not edit_changes:
             LOGGER.debug("nothing changed")
             return
 
-        for file_name, text_changes in file_changes.items():
-            try:
-                while True:
-                    LOGGER.debug("try apply changes")
-                    if DOCUMENT_CHANGE_SYNC.busy:
-                        LOGGER.debug("busy")
-                        time.sleep(0.5)
-                        continue
+        for file_name, text_changes in edit_changes.items():
 
-                    LOGGER.debug("apply changes to: %s", file_name)
-                    DOCUMENT_CHANGE_SYNC.set_busy()
-                    VIEW_COMMAND.open_file(DocumentURI(file_name).to_path())
-                    VIEW_COMMAND.apply_document_change(text_changes)
-                    LOGGER.debug("go to break")
-                    break
+            LOGGER.debug("try apply changes")
+            while True:
+                if DOCUMENT_CHANGE_SYNC.busy:
+                    LOGGER.debug("busy")
+                    time.sleep(0.5)
+                    continue
+                break
+
+            LOGGER.debug("apply changes to: %s", file_name)
+            DOCUMENT_CHANGE_SYNC.set_busy()
+            VIEW_COMMAND.open_file(DocumentURI(file_name).to_path())
+
+            try:
+                VIEW_COMMAND.apply_document_change(text_changes)
 
             except Exception as err:
                 LOGGER.error(err)
@@ -654,20 +664,19 @@ class LSPClientListener:
 
             LOGGER.debug("finish apply to: %s", file_name)
 
-    def _workspace_applyEdit(self, params):
+    def _workspace_applyEdit(self, params: Dict[str, object]):
         LOGGER.info("_workspace_applyEdit")
-
-        if not params:
-            return
 
         try:
             changes = params["edit"]["changes"]
 
         except Exception as err:
             LOGGER.error(repr(err))
-            return
-
-        self._apply_multiple_file_changes(changes)
+        else:
+            try:
+                self._apply_edit_changes(changes)
+            except Exception as err:
+                LOGGER.error("error apply edit_changes: %s", repr(err))
 
     def _textDocument_prepareRename(self, params: context.JSONRPCMessage):
         LOGGER.info("_textDocument_prepareRename")
@@ -693,9 +702,11 @@ class LSPClientListener:
             changes = params.result["changes"]
         except Exception as err:
             LOGGER.error(repr(err))
-            return
-
-        self._apply_multiple_file_changes(changes)
+        else:
+            try:
+                self._apply_edit_changes(changes)
+            except Exception as err:
+                LOGGER.error("error apply edit_changes: %s", repr(err))
 
     def _textDocument_definition(self, params: context.JSONRPCMessage):
         LOGGER.info("textDocument_definition")
@@ -785,8 +796,8 @@ class LSPClientListener:
         )
 
 
-class ClientContext(LSPClientListener):
-    """ClientContext"""
+class LSPClient(LSPClientListener):
+    """LSPClient"""
 
     def __init__(self, process_cmd: list):
         super().__init__(process_cmd)
@@ -810,10 +821,29 @@ class ClientContext(LSPClientListener):
         params = {
             "capabilities": {
                 "textDocument": {
-                    "hover": {
-                        "contentFormat": ["markdown", "plaintext"],
+                    "codeAction": {
+                        "codeActionLiteralSupport": {
+                            "codeActionKind": {
+                                "valueSet": [
+                                    "",
+                                    "quickfix",
+                                    "refactor",
+                                    "refactor.extract",
+                                    "refactor.inline",
+                                    "refactor.rewrite",
+                                    "source",
+                                    "source.organizeImports",
+                                ]
+                            }
+                        },
+                        "dataSupport": True,
+                        "disabledSupport": True,
                         "dynamicRegistration": True,
+                        "honorsChangeAnnotations": False,
+                        "isPreferredSupport": True,
+                        "resolveSupport": {"properties": ["edit"]},
                     },
+                    "hover": {"contentFormat": ["markdown", "plaintext"],},
                 }
             }
         }
@@ -821,17 +851,21 @@ class ClientContext(LSPClientListener):
             context.JSONRPCMessage.request(self.request_id(), "initialize", params)
         )
 
-    def textDocument_didOpen(self, path: str, source: str):
+    def textDocument_didOpen(self, file_name: str, source: str):
         LOGGER.info("_cmd_textDocument_didOpen")
 
+        # if self.active_file == file_name:
+        #     LOGGER.debug("%s already opened", file_name)
+        #     return
+
         # set active file name
-        self.active_file = path
+        self.active_file = file_name
 
         params = {
             "textDocument": {
                 "languageId": "cpp",
                 "text": source,
-                "uri": DocumentURI.from_path(path),
+                "uri": DocumentURI.from_path(file_name),
                 "version": self.document_version(),
             }
         }
@@ -1008,14 +1042,25 @@ class ClientContext(LSPClientListener):
 
 
 class ClangdClient:
-    def __init__(self):
+    """clangd LSPClient implementation"""
+
+    def __init__(self, clangd_path="", *clangd_args):
         self.context = None
+
+        clangd_path = clangd_path or "clangd"
+        self.server_commands = [clangd_path]
+        self.server_commands.extend(clangd_args)
+
+    def _run_server(self):
+        self.context = LSPClient(self.server_commands)
 
     def is_initialized(self):
         return bool(self.context)
 
     def initialize(self, workspace_directory: str, file_name: str, source: str):
-        self.context = ClientContext(["clangd"])
+        if not self.context:
+            self._run_server()
+
         self.context.initialize(workspace_directory)
 
         self.didOpen(file_name, source)
@@ -1048,11 +1093,6 @@ class ClangdClient:
 
 
 CLANGD_CLIENT = ClangdClient()
-
-
-class ClangdTweakCommand(sublime_plugin.TextCommand):
-    def run(self, edit, params):
-        CLANGD_CLIENT.clangd_applyTweak(params)
 
 
 def plugin_loaded():
