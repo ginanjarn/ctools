@@ -12,7 +12,7 @@ import subprocess
 import threading
 import abc
 
-from io import BytesIO, SEEK_SET, SEEK_END
+from io import BytesIO
 from typing import Callable, Optional, Union
 
 LOGGER = logging.getLogger(__name__)
@@ -170,7 +170,15 @@ class ResponseMessage(JSONMessage):
 
 
 class InvalidMessage(ValueError):
-    """message error"""
+    """message invalid"""
+
+
+class ContentIncomplete(ValueError):
+    """content size less than defined size"""
+
+
+class ContentOverflow(ValueError):
+    """content size greater than defined size"""
 
 
 class Stream:
@@ -179,94 +187,47 @@ class Stream:
     This class handle JSONRPC stream format
         '<header>\r\n<content>'
     
-    Header items must seperated by '\r\n'
+    Header items must end with '\r\n'
     """
 
     def __init__(self):
-        self.buffer = BytesIO()
-        self._lock = threading.Lock()
+        self.buffered = []
 
-    def write(self, data: bytes) -> None:
-        """write stream data"""
+    def put(self, data: bytes) -> None:
+        """put data to stream buffer"""
 
-        with self._lock:
-            # write always on end of file
-            self.buffer.seek(0, SEEK_END)
-            self.buffer.write(data)
+        self.buffered.append(data)
 
-    def _get_content_length(self, buf: BytesIO):
-        """get Content-Length"""
+    def get_content(self) -> str:
+        """get content"""
 
-        header = []
-        while True:
-            line = buf.readline()
-            if not line:
-                raise EOFError("End Of File")
+        buffered = b"".join(self.buffered)
 
-            if line == b"\r\n":
-                break
-            header.append(line)
+        try:
+            header, content = buffered.split(b"\r\n\r\n")
+        except ValueError as err:
+            LOGGER.debug("unable get header, err: %s", err)
+            raise InvalidMessage("unable get 'Content-Length'")
 
-        if not header:
-            raise InvalidMessage("unable parse header")
+        match = re.match(
+            r"^Content-Length: (\d+)", header.decode("ascii"), flags=re.MULTILINE
+        )
+        if not match:
+            raise InvalidMessage("unable get 'Content-Length'")
 
-        s_header = b"".join(header).decode("utf-8")
-        pattern = re.compile(r"^Content\-Length: (\d+)")
+        valid_length = int(match.group(1))
+        content_length = len(content)
 
-        for line in s_header.splitlines():
-            match = pattern.match(line)
-            if match:
-                return int(match.group(1))
+        if content_length < valid_length:
+            raise ContentIncomplete(
+                "want length: %d, expected: %d" % (valid_length, content_length)
+            )
+        if content_length > valid_length:
+            raise ContentOverflow(
+                "want length: %d, expected: %d" % (valid_length, content_length)
+            )
 
-        raise InvalidMessage("unable find Content-Length")
-
-    def read(self) -> bytes:
-        """read stream data
-
-        Return:
-            content or empty bytes
-
-        Raises:
-            InvalidMessage
-            EOFError
-        """
-
-        with self._lock:
-
-            # in reading, read always start from beginning of header
-            self.buffer.seek(0, SEEK_SET)
-
-            _content_length = self._get_content_length(self.buffer)
-            content = self.buffer.read(_content_length)
-
-            recv_len = len(content)
-            if recv_len < _content_length:
-                # wait content
-                LOGGER.debug("content incomplete, wait next")
-                return b""
-
-            elif recv_len > _content_length:
-                raise InvalidMessage(
-                    "content overflow, want %d expected %d"
-                    % (_content_length, recv_len)
-                )
-
-            # tell current cursor
-            read_cur = self.buffer.tell()
-
-            # replacement buffer
-            temp = BytesIO()
-
-            # check if any left in buffer
-            tail = self.buffer.readline()
-            if tail:
-                self.buffer.seek(read_cur, SEEK_SET)
-                temp.write(self.buffer.read())
-
-            # replace buffer
-            self.buffer = temp
-
-            return content
+        return content.decode("utf-8")
 
 
 class Transport(abc.ABC):
@@ -310,7 +271,6 @@ class StandardIO(Transport):
         self.server_process: subprocess.Popen = self._init_process(process_cmd)
 
         self.command_map = {}
-        self._stream = Stream()
 
         # listener
         self.stdout_thread: threading.Thread = None
@@ -348,6 +308,7 @@ class StandardIO(Transport):
 
     def _write(self, message: JSONMessage):
         LOGGER.info("_write to stdin")
+
         bmessage = message.to_bytes()
         LOGGER.debug("write:\n%s", bmessage)
         self.server_process.stdin.write(bmessage)
@@ -355,21 +316,22 @@ class StandardIO(Transport):
 
     def notify(self, message: RequestMessage):
         LOGGER.info("notify")
+
         self._write(message)
 
     def request(self, message: RequestMessage):
         LOGGER.info("request")
+
         self.request_map[message.id_] = message.method
         self._write(message)
 
     def exec_command(self, method: str, params: object):
         LOGGER.info("exec_command")
+
         try:
             handle = self.command_map[method]
         except KeyError:
-            LOGGER.error(
-                "unregistered command: %s", {"command": method, "params": params}
-            )
+            LOGGER.error("method not found: '%s', params: %s", method, params)
 
         else:
             try:
@@ -377,53 +339,67 @@ class StandardIO(Transport):
             except Exception as err:
                 LOGGER.debug("exec_command error: \n%s", err)
 
-    def _handle_stdout_message(self):
-        LOGGER.info("_handle_stdout_message")
-        while True:
+    def _process_stdout_message(self, content: str):
+        """process stdout message"""
+
+        message = JSONMessage.from_string(content)
+        LOGGER.debug("message: %s", message)
+
+        if message.is_response():
             try:
-                content = self._stream.read()
-            except EOFError:
-                LOGGER.debug("EOF")
-                break
+                method = self.request_map.pop(message.id_)
 
-            if not content:
-                break
-
-            message = JSONMessage.from_string(content.decode("utf-8"))
-            LOGGER.debug("message: %s", message)
-
-            if message.is_response():
-                try:
-                    method = self.request_map.pop(message.id_)
-
-                except KeyError as err:
-                    LOGGER.debug("invalid response id: %s", str(err))
-                    LOGGER.debug("registered request: %s", self.request_map)
-
-                else:
-                    response = ResponseMessage.from_json_transport(message)
-                    self.exec_command(method, response)
-
-            elif message.is_request():
-                # exec server command
-                command = RequestMessage.from_json_transport(message)
-                self.exec_command(command.method, command.params)
+            except KeyError as err:
+                LOGGER.debug("request id not found: '%s'", str(err))
+                LOGGER.debug("all request: %s", self.request_map)
 
             else:
-                LOGGER.debug("invalid message: %s", message)
+                # FIXME: handle this response:
+                #     {'id': 6, 'jsonrpc': '2.0', 'result': None}
+
+                response = ResponseMessage.from_json_transport(message)
+                self.exec_command(method, response)
+
+        elif message.is_request():
+            # exec server command
+            command = RequestMessage.from_json_transport(message)
+            self.exec_command(command.method, command.params)
+
+        else:
+            LOGGER.debug("invalid message: %s", message)
 
     def _listen_stdout(self):
-        while True:
-            stdout = self.server_process.stdout
-            line = stdout.read(2048)
-            if not line:
-                break
+        """listen stdout task"""
 
-            LOGGER.debug("line: %s", line)
-            self._stream.write(line)
-            self._handle_stdout_message()
+        stdout = self.server_process.stdout
+        stream = Stream()
+        while True:
+
+            try:
+                content = stream.get_content()
+
+            except ContentIncomplete as err:
+                LOGGER.debug("error: %s", err)
+
+            except (InvalidMessage, ContentOverflow) as err:
+                LOGGER.debug("invalid message: %s", err)
+
+                # reset with new Stream object
+                stream = Stream()
+            else:
+                LOGGER.debug("content: %s", content)
+
+                self._process_stdout_message(content)
+
+                # reset with new Stream object
+                stream = Stream()
+
+            buf = stdout.read(2048)
+            stream.put(buf)
 
     def _listen_stderr(self):
+        """listen stderr task"""
+
         while True:
             stderr = self.server_process.stderr
             line = stderr.read(2048)
