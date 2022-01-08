@@ -72,37 +72,41 @@ _KIND_MAP = {
 class CompletionList(sublime.CompletionList):
     """CompletionList"""
 
+    @staticmethod
+    def build_completion(rpc_items: Dict[str, object]):
+        """build completion item"""
+
+        for item in rpc_items:
+
+            # additional changes, ex: include library
+            changes = item.get("additionalTextEdits") or []
+
+            # completion text
+            text_changes = item["textEdit"]
+            text_changes["range"]["end"]["character"] -= 1  # prevent clean endline
+            changes.append(text_changes)
+
+            # sort in line ordered
+            changes.sort(key=lambda item: item["range"]["start"]["line"])
+
+            yield sublime.CompletionItem.command_completion(
+                trigger=item["filterText"],
+                command="ctools_apply_document_change",
+                args={"changes": changes},
+                annotation=item["label"],
+                kind=_KIND_MAP.get(item["kind"], sublime.KIND_AMBIGUOUS),
+            )
+
     @classmethod
     def from_rpc(cls, completion_items: List[dict]):
         """load from rpc"""
 
         LOGGER.debug("completion_list: %s", completion_items)
 
-        completions = (
-            [
-                sublime.CompletionItem(
-                    trigger=completion["filterText"].strip('">')
-                    if completion["kind"] == 17
-                    else completion["insertText"],
-                    annotation=completion["label"].strip('">')
-                    if completion["kind"] == 17
-                    else completion["label"],
-                    completion=completion["insertText"].strip('">')
-                    if completion["kind"] == 17
-                    else completion["insertText"],
-                    completion_format=sublime.COMPLETION_FORMAT_SNIPPET,
-                    kind=_KIND_MAP.get(completion["kind"], sublime.KIND_AMBIGUOUS),
-                )
-                for completion in sorted(
-                    completion_items, key=lambda item: item["score"]
-                )
-            ]
-            if completion_items
-            else []
-        )
-
         return cls(
-            completions,
+            completions=list(cls.build_completion(completion_items))
+            if completion_items
+            else [],
             flags=sublime.INHIBIT_WORD_COMPLETIONS
             | sublime.INHIBIT_EXPLICIT_COMPLETIONS,
         )
