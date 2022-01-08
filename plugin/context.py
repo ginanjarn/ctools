@@ -301,6 +301,10 @@ class StandardIO(Transport):
                 stream = Stream()
 
             buf = stdout.read(2048)
+            if not buf:
+                LOGGER.debug("stdout closed")
+                return
+
             stream.put(buf)
 
     def _listen_stderr(self):
@@ -309,6 +313,10 @@ class StandardIO(Transport):
         while True:
             stderr = self.server_process.stderr
             line = stderr.read(2048)
+
+            if not line:
+                LOGGER.debug("stderr closed")
+                return
 
             try:
                 LOGGER.debug("stderr:\n%s", line)
