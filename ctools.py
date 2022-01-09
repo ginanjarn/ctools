@@ -312,16 +312,48 @@ class CtoolsApplyDocumentChangeCommand(sublime_plugin.TextCommand):
         DOCUMENT_CHANGE_SYNC.set_finished()
 
 
+class CtoolsGotoLocationCommand(sublime_plugin.TextCommand):
+    """Go to location"""
+
+    def run(self, edit, locations: Dict[str, object]):
+
+        self.locations = list(self.build_location(locations))
+        self.window: sublime.Window = self.view.window()
+
+        self.window.show_quick_panel(
+            self.locations, self.open_path, flags=sublime.MONOSPACE_FONT
+        )
+
+    def build_location(self, locations: Dict[str, object]):
+        for location in locations:
+            yield "{file_name}:{row}:{col}".format(
+                file_name=DocumentURI(location["uri"]).to_path(),
+                row=location["range"]["start"]["line"] + 1,
+                col=location["range"]["start"]["character"] + 1,
+            )
+
+    def open_path(self, index=-1):
+        # open file if index > -1
+        if index > -1:
+            self.window.open_file(self.locations[index], sublime.ENCODED_POSITION)
+
+
 class ViewCommand:
     """commands to active view"""
 
     def __init__(self):
-        self.window: sublime.Window = sublime.active_window()
-        self.view: sublime.View = self.window.active_view()
 
         # use queue because result should be invalidated after used
         self.completion_queue = queue.Queue(1)
         self.diagnostics_map = {}
+
+    @property
+    def window(self):
+        return sublime.active_window()
+
+    @property
+    def view(self):
+        return sublime.active_window().active_view()
 
     def get_completion_result(self):
         try:
@@ -332,28 +364,19 @@ class ViewCommand:
     def open_file(self, file_name: str):
         LOGGER.debug("open_file: %s", file_name)
 
-        if self.view and self.view.file_name() == file_name:
+        if self.view.file_name() == file_name:
             return
-
-        self.window = sublime.active_window()
 
         view = self.window.find_open_file(file_name)
         if not view:
-            view = self.window.open_file(file_name)
-
-        self.view = view
+            self.window.open_file(file_name)
 
     def focus_view(self):
         self.window.focus_view(self.view)
 
     def close(self, file_name: str):
-        if self.view.file_name() != file_name:
-            return
-
-        self.view.close()
-
-        self.window = sublime.active_window()
-        self.view = self.window.active_view()
+        if self.view.file_name() == file_name:
+            self.view.close()
 
     def show_completions(self, completions: List[dict]):
         completion_list = CompletionList.from_rpc(completions)
@@ -383,24 +406,6 @@ class ViewCommand:
         )
 
     def show_code_action(self, action_params: List[dict]):
-        # action_params
-        # [
-        #     {
-        #         "arguments": [
-        #             {
-        #                 "file": "file:///C:/Users/ginanjar/cproject/cpptools/main.cpp",
-        #                 "selection": {
-        #                     "end": {"character": 39, "line": 8},
-        #                     "start": {"character": 39, "line": 8},
-        #                 },
-        #                 "tweakID": "AddUsing",
-        #             }
-        #         ],
-        #         "command": "clangd.applyTweak",
-        #         "title": "Add using-declaration for endl and remove qualifier",
-        #     }
-        # ],
-
         def on_done(index=-1):
             if index > -1:
                 self.view.run_command(
@@ -471,55 +476,7 @@ class ViewCommand:
         )
 
     def goto(self, params: List[dict]):
-        # params
-        # [
-        #     {
-        #         "range": {
-        #             "end": {"character": 25, "line": 0},
-        #             "start": {"character": 21, "line": 0},
-        #         },
-        #         "uri": "file:///C:/Users/ginanjar/cproject/cpptools/meteor.cpp",
-        #     }
-        # ]
-
-        items = params
-
-        file_names_encoded = [
-            "{file_name}:{row}:{col}".format(
-                file_name=DocumentURI(item["uri"]).to_path(),
-                row=item["range"]["start"]["line"] + 1,
-                col=item["range"]["start"]["character"] + 1,
-            )
-            for item in params
-        ]
-
-        def on_done(index=-1):
-            if index > -1:
-                LOGGER.debug("selected item: %s", file_names_encoded[index])
-
-                view = self.window.find_open_file(
-                    DocumentURI(items[index]["uri"]).to_path()
-                )
-
-                if not view:
-                    self.window.open_file(
-                        file_names_encoded[index], sublime.ENCODED_POSITION
-                    )
-                    return
-
-                startpoint = view.text_point(
-                    items[index]["range"]["start"]["line"],
-                    items[index]["range"]["start"]["character"],
-                )
-                region = sublime.Region(startpoint, startpoint)
-                self.window.focus_view(view)
-                view.sel().clear()
-                view.sel().add(region)
-                view.show(region)
-
-        self.window.show_quick_panel(
-            file_names_encoded, on_done, flags=sublime.MONOSPACE_FONT
-        )
+        self.view.run_command("ctools_goto_location", {"locations": params})
 
 
 VIEW_COMMAND: ViewCommand = ViewCommand()
