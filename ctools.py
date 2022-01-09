@@ -409,7 +409,8 @@ class ViewCommand:
         def on_done(index=-1):
             if index > -1:
                 self.view.run_command(
-                    "ctools_workspace_exec_command", {"params": action_params[index]}
+                    "ctools_workspace_exec_command",
+                    {"params": action_params[index]["command"]},
                 )
 
         items = [item["title"] for item in action_params]
