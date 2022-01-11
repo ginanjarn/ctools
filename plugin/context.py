@@ -56,6 +56,12 @@ class JSONRPCMessage(dict):
         return cls(**{"id": id_, "method": method, "params": params})
 
     @classmethod
+    def cancel_request(cls, id_):
+        """new request message"""
+
+        return cls(**{"method": "$/cancelRequest", "params": {"id": id_}})
+
+    @classmethod
     def notification(cls, method, params=None):
         """new notification message"""
 
@@ -157,6 +163,10 @@ class Transport(abc.ABC):
         """request to server, wait response"""
 
     @abc.abstractmethod
+    def cancel_request(self, message: JSONRPCMessage):
+        """cancel request, cancel request should clean request queue"""
+
+    @abc.abstractmethod
     def exec_command(self, method: str, params: Optional[Union[JSONRPCMessage, dict]]):
         """exec command triggered by server message"""
 
@@ -230,6 +240,15 @@ class StandardIO(Transport):
         LOGGER.info("request")
 
         self.request_map[message.id] = message.method
+        self._write(message)
+
+    def cancel_request(self, message: JSONRPCMessage):
+        LOGGER.info("cancel request")
+
+        try:
+            del self.request_map[message.params["id"]]
+        except KeyError as err:
+            LOGGER.debug("request canceled: %s", err)
         self._write(message)
 
     def exec_command(self, method: str, params: object):
