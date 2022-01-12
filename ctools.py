@@ -83,11 +83,51 @@ class CompletionList(sublime.CompletionList):
 
             # completion text
             text_changes = item["textEdit"]
-            text_changes["range"]["end"]["character"] -= 1  # prevent clean endline
-            changes.append(text_changes)
 
-            # sort in line ordered
-            changes.sort(key=lambda item: item["range"]["start"]["line"])
+            """
+            SublimeText remove prefix on completion trigger
+            
+            1. normal case
+            
+               > #include <iostream>
+               > 
+               > int main(int argc, char **argv) {
+               >   std::string name{"cocoa"};
+               >   cou
+               > 
+            
+            2. on completion trigger
+
+               > #include <iostream>
+               > 
+               > int main(int argc, char **argv) {
+               >   std::string name{"cocoa"};
+               >   
+               > 
+            
+            """
+
+            text_changes["range"]["end"]["character"] = text_changes["range"]["start"][
+                "character"
+            ]
+
+            """
+            Non-alphanumeric character not removed
+
+            1. normal case:
+
+               > #include "met"
+
+            2. on completion trigger:
+
+               > #include ""
+
+            """
+
+            if item["kind"] == 17:
+                text_changes["range"]["end"]["character"] += 1
+
+            changes.append(text_changes)
 
             yield sublime.CompletionItem.command_completion(
                 trigger=item["filterText"],
@@ -236,8 +276,9 @@ class Diagnostics:
 class ChangeItem:
     """this class hold change data"""
 
-    def __init__(self, region: sublime.Region, new_text: str):
+    def __init__(self, region: sublime.Region, old_text: str, new_text: str):
         self.region = region
+        self.old_text = old_text
         self.new_text = new_text
 
         # cursor position move
@@ -248,12 +289,10 @@ class ChangeItem:
         return sublime.Region(self.region.a + cursor_move, self.region.b + cursor_move)
 
     def __repr__(self):
-        return str(
-            {
-                "cursor_move": self.cursor_move,
-                "region": str(self.region),
-                "new_text": self.new_text,
-            }
+        return (
+            f"ChangeItem({repr(self.region)}, "
+            f"{repr(self.old_text)}, {repr(self.new_text)}, "
+            f"{self.cursor_move})"
         )
 
     @classmethod
@@ -262,7 +301,9 @@ class ChangeItem:
 
         start = view.text_point(range_["start"]["line"], range_["start"]["character"])
         end = view.text_point(range_["end"]["line"], range_["end"]["character"])
-        return cls(sublime.Region(start, end), new_text)
+        region = sublime.Region(start, end)
+        old_text = view.substr(region)
+        return cls(region, old_text, new_text)
 
 
 class DocumentChangeSync:
@@ -290,6 +331,7 @@ class CtoolsApplyDocumentChangeCommand(sublime_plugin.TextCommand):
 
     def run(self, edit: sublime.Edit, changes: list):
         LOGGER.info("CtoolsApplyDocumentChangeCommand")
+        LOGGER.debug("changes: %s", changes)
 
         view: sublime.View = self.view
 
@@ -299,6 +341,9 @@ class CtoolsApplyDocumentChangeCommand(sublime_plugin.TextCommand):
             )
             for change in changes
         ]
+
+        # prevent change collision
+        list_change_item.sort(key=lambda item: item.region)
 
         # this hold cursor movement
         cursor_move = 0
@@ -320,9 +365,7 @@ class CtoolsGotoLocationCommand(sublime_plugin.TextCommand):
         self.locations = list(self.build_location(locations))
         self.window: sublime.Window = self.view.window()
 
-        self.window.show_quick_panel(
-            self.locations, self.open_path, flags=sublime.MONOSPACE_FONT
-        )
+        self.window.show_quick_panel(self.locations, self.open_path)
 
     def build_location(self, locations: Dict[str, object]):
         for location in locations:
@@ -414,7 +457,7 @@ class ViewCommand:
                 )
 
         items = [item["title"] for item in action_params]
-        self.window.show_quick_panel(items, on_done, flags=sublime.MONOSPACE_FONT)
+        self.window.show_quick_panel(items, on_done)
 
     def apply_document_change(self, changes: List[dict]):
 
@@ -673,38 +716,11 @@ class LSPClientListener:
     def _textDocument_definition(self, params: context.JSONRPCMessage):
         LOGGER.info("textDocument_definition")
         LOGGER.debug("params: %s", params)
-        # {
-        #     "id": 30,
-        #     "jsonrpc": "2.0",
-        #     "result": [
-        #         {
-        #             "range": {
-        #                 "end": {"character": 9, "line": 0},
-        #                 "start": {"character": 4, "line": 0},
-        #             },
-        #             "uri": "file:///C:/Users/ginanjar/cproject/cpptools/meteor.cpp",
-        #         }
-        #     ],
-        # }
         VIEW_COMMAND.goto(params.result)
 
     def _textDocument_declaration(self, params: context.JSONRPCMessage):
         LOGGER.info("textDocument_declaration")
         LOGGER.debug("params: %s", params)
-
-        # {
-        #     "id": 42,
-        #     "jsonrpc": "2.0",
-        #     "result": [
-        #         {
-        #             "range": {
-        #                 "end": {"character": 25, "line": 0},
-        #                 "start": {"character": 21, "line": 0},
-        #             },
-        #             "uri": "file:///C:/Users/ginanjar/cproject/cpptools/meteor.cpp",
-        #         }
-        #     ],
-        # }
         VIEW_COMMAND.goto(params.result)
 
     def _register_commands(self):
@@ -774,6 +790,12 @@ class LSPClient(LSPClientListener):
     def document_version(self):
         self._document_version += 1
         return self._document_version
+
+    def cancelRequest(self):
+
+        self.transport.cancel_request(
+            context.JSONRPCMessage.cancel_request(self._request_id)
+        )
 
     def initialize(self, project_path: str):
         """initialize server"""
@@ -845,6 +867,7 @@ class LSPClient(LSPClientListener):
                 "version": self.document_version(),
             },
         }
+        LOGGER.debug("didChange: %s", params)
         self._hide_completion(changes[0]["text"])
         self.transport.notify(
             context.JSONRPCMessage.notification("textDocument/didChange", params)
@@ -1192,6 +1215,8 @@ class TextChangeListener(sublime_plugin.TextChangeListener):
 
         if not (is_valid_source(file_name) and CLANGD_CLIENT.is_initialized()):
             return
+
+        CLANGD_CLIENT.context.cancelRequest()
 
         content_changes = []
         for change in changes:
