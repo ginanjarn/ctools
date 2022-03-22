@@ -19,14 +19,16 @@ LOG_TEMPLATE = "%(levelname)s %(asctime)s %(filename)s:%(lineno)s  %(message)s"
 STREAM_HANDLER.setFormatter(logging.Formatter(LOG_TEMPLATE))
 LOGGER.addHandler(STREAM_HANDLER)
 
-try:
-    file_dir = os.path.dirname(os.path.abspath(__file__))
-    with open(os.path.join(file_dir, "asset", "markdown-style.css")) as file:
-        STYLE = "<style>\n%s</style>\n" % file.read()
+# try:
+#     file_dir = os.path.dirname(os.path.abspath(__file__))
+#     with open(os.path.join(file_dir, "asset", "markdown-style.css")) as file:
+#         STYLE = "<style>\n%s</style>\n" % file.read()
 
-except FileNotFoundError:
-    LOGGER.warning("stylesheet not found", exc_info=True)
-    STYLE = ""
+# except FileNotFoundError:
+#     LOGGER.warning("stylesheet not found", exc_info=True)
+#     STYLE = ""
+
+STYLE = ""
 
 
 class CtoolsMarkdownPopupCommand(sublime_plugin.TextCommand):
