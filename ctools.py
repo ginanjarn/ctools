@@ -464,9 +464,9 @@ class ActiveDocument:
 class Document:
     """Document handler"""
 
-    def __init__(self, file_name: str):
+    def __init__(self, file_name: str, *, open_file: bool = False):
         view = sublime.active_window().find_open_file(file_name)
-        if not view:
+        if not view and open_file:
             view = sublime.active_window().open_file(file_name)
 
         self.view = view
@@ -649,7 +649,7 @@ class ClangdClient(lsp.LSPClient):
 
             LOGGER.debug("apply changes to: %s", file_name)
             DOCUMENT_CHANGE_SYNC.set_busy()
-            document = Document(DocumentURI(file_name).to_path())
+            document = Document(DocumentURI(file_name).to_path(), open_file=True)
 
             try:
                 document.apply_document_change(text_changes)
