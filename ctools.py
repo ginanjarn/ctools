@@ -147,14 +147,12 @@ class Diagnostics:
 
     def __init__(self, view: sublime.View):
         self.view = view
+        self.window = self.view.window()
         self.message_map = {}
-
-    def get_message(self, lineno: int) -> str:
-        """get message"""
-        return self.message_map.get(lineno)
+        self.outputpanel_name = f"ctools:{self.view.file_name()}"
 
     def add_regions(
-        self, key: str, regions: List[sublime.Region],
+        self, key: str, regions: List[sublime.Region], *, error_region: bool = False
     ):
         """add syntax highlight regions"""
 
@@ -162,7 +160,7 @@ class Diagnostics:
             key=key,
             regions=regions,
             scope="Comment",
-            icon="dot",
+            icon="circle" if error_region else "dot",
             flags=(
                 sublime.DRAW_NO_FILL
                 | sublime.DRAW_NO_OUTLINE
@@ -188,8 +186,8 @@ class Diagnostics:
         hint_region = []
 
         for diagnostic in adapted_diagnostic:
-            row, _ = self.view.rowcol(diagnostic.region.a)
-            self.message_map[row] = diagnostic.message
+            row, col = self.view.rowcol(diagnostic.region.a)
+            self.message_map[(row, col)] = diagnostic.message
 
             if diagnostic.severity == 1:
                 error_region.append(diagnostic.region)
@@ -203,20 +201,46 @@ class Diagnostics:
         # clear if any highlight in view
         self.erase_highlight()
 
-        try:
-            self.add_regions(key=self.region_key[1], regions=error_region)
-            self.add_regions(key=self.region_key[2], regions=warning_region)
-            self.add_regions(key=self.region_key[3], regions=information_region)
-            self.add_regions(key=self.region_key[4], regions=hint_region)
-
-        except Exception as err:
-            LOGGER.error(err)
+        self.add_regions(
+            key=self.region_key[1], regions=error_region, error_region=True
+        )
+        self.add_regions(key=self.region_key[2], regions=warning_region)
+        self.add_regions(key=self.region_key[3], regions=information_region)
+        self.add_regions(key=self.region_key[4], regions=hint_region)
 
     def erase_highlight(self):
         """erase highlight"""
 
         for _, value in Diagnostics.region_key.items():
             self.view.erase_regions(value)
+
+    def show_panel(self) -> None:
+        """show output panel"""
+
+        def build_message(mapping: Dict[tuple, str]):
+            short_name = os.path.basename(self.view.file_name())
+            for key, val in mapping.items():
+                row, col = key
+                yield f"{short_name}:{row+1}:{col} {val}"
+
+        if self.message_map:
+
+            # create new panel
+            panel = self.window.create_output_panel(self.outputpanel_name)
+            message = "\n".join(build_message(self.message_map))
+
+            panel.set_read_only(False)
+            panel.run_command(
+                "append", {"characters": message},
+            )
+
+        self.window.run_command(
+            "show_panel", {"panel": f"output.{self.outputpanel_name}"}
+        )
+
+    def destroy_panel(self):
+        """destroy output panel"""
+        self.window.destroy_output_panel(self.outputpanel_name)
 
 
 class ChangeItem:
@@ -313,7 +337,6 @@ class ActiveDocument:
     def __init__(self):
 
         self.completion_result = None
-        self.diagnostics_map = {}
         self._window: sublime.Window = None
         self._view: sublime.View = None
 
@@ -471,7 +494,6 @@ class Document:
 
         self.view = view
         self.window = view.window()
-        self.diagnostics_map = {}
 
     def apply_document_change(self, changes: List[dict]):
 
@@ -491,13 +513,20 @@ class Document:
         LOGGER.debug("apply diagnostics to: %s", self.view.file_name())
         diagnostics = Diagnostics(self.view)
         diagnostics.set_diagnostics(diagnostics_item)
-
-        LOGGER.debug("diagnostic message map: %s", diagnostics.message_map)
-        self.diagnostics_map = diagnostics.message_map
+        diagnostics.show_panel()
 
     def clear_diagnostics(self):
-        Diagnostics(self.view).erase_highlight()
-        self.diagnostics_map = {}
+        diagnostic = Diagnostics(self.view)
+        try:
+            diagnostic.erase_highlight()
+            diagnostic.destroy_panel()
+
+        except Exception as err:
+            LOGGER.error(err)
+
+    def show_diagnostics(self):
+        diagnostic = Diagnostics(self.view)
+        diagnostic.show_panel()
 
     def set_status(self, message: str):
         self.view.set_status("ctools_status", message)
@@ -1106,6 +1135,10 @@ class EventListener(sublime_plugin.EventListener):
         file_name = view.file_name()
         if not (is_valid_source(view) and CLANGD_CLIENT.is_initialized):
             return
+
+        # show diagnostic
+        document = Document(file_name)
+        document.show_diagnostics()
 
         source = view.substr(sublime.Region(0, view.size()))
         try:
