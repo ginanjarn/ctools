@@ -596,15 +596,6 @@ class ClangdClient(lsp.LSPClient):
         if params.error:
             LOGGER.error(params.error)
 
-        # contents = params.result["contents"]["value"]
-        # kind = params.result["contents"]["kind"]
-        # start = params.result["range"]["start"]
-        # location = (start["line"], start["character"])
-
-        # LOGGER.debug("markup kind: %s", kind)
-
-        # ACTIVE_DOCUMENT.show_popup(contents, location)
-
         ACTIVE_DOCUMENT.show_popup(params.result)
 
     def handle_textDocument_formatting(self, params: lsp.RPCMessage):
@@ -1059,8 +1050,16 @@ def pipe(func):
     return wrapper
 
 
-def is_valid_source(view: sublime.View) -> bool:
+def valid_source(view: sublime.View) -> bool:
     return view.match_selector(0, "source.c++") or view.match_selector(0, "source.c")
+
+
+def valid_identifier(view: sublime.View, location: int):
+    if view.match_selector(location, "string") or view.match_selector(
+        location, "comment"
+    ):
+        return False
+    return True
 
 
 class EventListener(sublime_plugin.EventListener):
@@ -1068,7 +1067,7 @@ class EventListener(sublime_plugin.EventListener):
         self, view: sublime.View, prefix: str, locations: List[int]
     ) -> Union[CompletionList, None]:
 
-        if not is_valid_source(view):
+        if not (valid_source(view) and valid_identifier(view, locations[0])):
             return None
 
         completions = ACTIVE_DOCUMENT.get_completion_result()
@@ -1101,10 +1100,10 @@ class EventListener(sublime_plugin.EventListener):
             CLANGD_CLIENT.textDocument_completion(file_name, row, col)
 
     def on_hover(self, view: sublime.View, point: int, hover_zone: int) -> None:
-        if not is_valid_source(view):
+        if not valid_source(view):
             return
 
-        if hover_zone != sublime.HOVER_TEXT:
+        if not (hover_zone == sublime.HOVER_TEXT and valid_identifier(view, point)):
             # LOGGER.debug("currently only support HOVER_TEXT")
             return
 
@@ -1133,7 +1132,7 @@ class EventListener(sublime_plugin.EventListener):
 
     def on_activated_async(self, view: sublime.View) -> None:
         file_name = view.file_name()
-        if not (is_valid_source(view) and CLANGD_CLIENT.is_initialized):
+        if not (valid_source(view) and CLANGD_CLIENT.is_initialized):
             return
 
         # show diagnostic
@@ -1150,7 +1149,7 @@ class EventListener(sublime_plugin.EventListener):
 
     def on_close(self, view: sublime.View) -> None:
         file_name = view.file_name()
-        if not (is_valid_source(view) and CLANGD_CLIENT.is_initialized):
+        if not (valid_source(view) and CLANGD_CLIENT.is_initialized):
             return
 
         try:
@@ -1162,7 +1161,7 @@ class EventListener(sublime_plugin.EventListener):
 
     def on_post_save_async(self, view: sublime.View) -> None:
         file_name = view.file_name()
-        if not (is_valid_source(view) and CLANGD_CLIENT.is_initialized):
+        if not (valid_source(view) and CLANGD_CLIENT.is_initialized):
             return
 
         try:
@@ -1177,7 +1176,7 @@ class TextChangeListener(sublime_plugin.TextChangeListener):
         file_name = self.buffer.file_name()
         view = self.buffer.primary_view()
 
-        if not (is_valid_source(view) and CLANGD_CLIENT.is_initialized):
+        if not (valid_source(view) and CLANGD_CLIENT.is_initialized):
             return
 
         LOGGER.info("on_text_changed_async")
@@ -1209,21 +1208,21 @@ class CtoolsDocumentFormattingCommand(sublime_plugin.TextCommand):
     def run(self, edit):
         LOGGER.info("CtoolsDocumentFormattingCommand")
 
-        if is_valid_source(self.view) and CLANGD_CLIENT.is_initialized:
+        if valid_source(self.view) and CLANGD_CLIENT.is_initialized:
             try:
                 CLANGD_CLIENT.textDocument_formatting(self.view.file_name())
             except ServerOffline:
                 pass
 
     def is_visible(self):
-        return is_valid_source(self.view) and CLANGD_CLIENT.is_initialized
+        return valid_source(self.view) and CLANGD_CLIENT.is_initialized
 
 
 class CtoolsCodeActionCommand(sublime_plugin.TextCommand):
     def run(self, edit):
         LOGGER.info("CtoolsDocumentFormattingCommand")
 
-        if is_valid_source(self.view) and CLANGD_CLIENT.is_initialized:
+        if valid_source(self.view) and CLANGD_CLIENT.is_initialized:
             location = self.view.sel()[0]
             start_row, start_col = self.view.rowcol(location.a)
             end_row, end_col = self.view.rowcol(location.b)
@@ -1236,28 +1235,28 @@ class CtoolsCodeActionCommand(sublime_plugin.TextCommand):
                 pass
 
     def is_visible(self):
-        return is_valid_source(self.view) and CLANGD_CLIENT.is_initialized
+        return valid_source(self.view) and CLANGD_CLIENT.is_initialized
 
 
 class CtoolsWorkspaceExecCommandCommand(sublime_plugin.TextCommand):
     def run(self, edit, params):
         LOGGER.info("CtoolsWorkspaceExecCommandCommand")
 
-        if is_valid_source(self.view) and CLANGD_CLIENT.is_initialized:
+        if valid_source(self.view) and CLANGD_CLIENT.is_initialized:
             try:
                 CLANGD_CLIENT.workspace_executeCommand(params)
             except ServerOffline:
                 pass
 
     def is_visible(self):
-        return is_valid_source(self.view) and CLANGD_CLIENT.is_initialized
+        return valid_source(self.view) and CLANGD_CLIENT.is_initialized
 
 
 class CtoolsRenameCommand(sublime_plugin.TextCommand):
     def run(self, edit, row, col, new_name):
         LOGGER.info("CtoolsRenameCommand")
 
-        if is_valid_source(self.view) and CLANGD_CLIENT.is_initialized:
+        if valid_source(self.view) and CLANGD_CLIENT.is_initialized:
             file_name = self.view.file_name()
             try:
                 CLANGD_CLIENT.textDocument_rename(file_name, row, col, new_name)
@@ -1265,14 +1264,14 @@ class CtoolsRenameCommand(sublime_plugin.TextCommand):
                 pass
 
     def is_visible(self):
-        return is_valid_source(self.view) and CLANGD_CLIENT.is_initialized
+        return valid_source(self.view) and CLANGD_CLIENT.is_initialized
 
 
 class CtoolsPrepareRenameCommand(sublime_plugin.TextCommand):
     def run(self, edit, location=None):
         LOGGER.info("CtoolsPrepareRenameCommand")
 
-        if is_valid_source(self.view) and CLANGD_CLIENT.is_initialized:
+        if valid_source(self.view) and CLANGD_CLIENT.is_initialized:
             file_name = self.view.file_name()
 
             if location is None:
@@ -1285,14 +1284,14 @@ class CtoolsPrepareRenameCommand(sublime_plugin.TextCommand):
                 pass
 
     def is_visible(self):
-        return is_valid_source(self.view) and CLANGD_CLIENT.is_initialized
+        return valid_source(self.view) and CLANGD_CLIENT.is_initialized
 
 
 class CtoolsGotoDefinitionCommand(sublime_plugin.TextCommand):
     def run(self, edit, location=None):
         LOGGER.info("CtoolsGotoDefinitionCommand")
 
-        if is_valid_source(self.view) and CLANGD_CLIENT.is_initialized:
+        if valid_source(self.view) and CLANGD_CLIENT.is_initialized:
             file_name = self.view.file_name()
 
             if location is None:
@@ -1305,14 +1304,14 @@ class CtoolsGotoDefinitionCommand(sublime_plugin.TextCommand):
                 pass
 
     def is_visible(self):
-        return is_valid_source(self.view) and CLANGD_CLIENT.is_initialized
+        return valid_source(self.view) and CLANGD_CLIENT.is_initialized
 
 
 class CtoolsGotoDeclarationCommand(sublime_plugin.TextCommand):
     def run(self, edit, location=None):
         LOGGER.info("CtoolsGotoDeclarationCommand")
 
-        if is_valid_source(self.view) and CLANGD_CLIENT.is_initialized:
+        if valid_source(self.view) and CLANGD_CLIENT.is_initialized:
             file_name = self.view.file_name()
 
             if location is None:
@@ -1325,4 +1324,4 @@ class CtoolsGotoDeclarationCommand(sublime_plugin.TextCommand):
                 pass
 
     def is_visible(self):
-        return is_valid_source(self.view) and CLANGD_CLIENT.is_initialized
+        return valid_source(self.view) and CLANGD_CLIENT.is_initialized
