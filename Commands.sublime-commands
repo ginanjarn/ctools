@@ -1,0 +1,7 @@
+[
+	{ "caption": "CTools: Document Formatting", "command": "ctools_document_formatting" },
+	{ "caption": "CTools: Code Action", "command": "ctools_code_action" },
+	{ "caption": "CTools: Rename", "command": "ctools_prepare_rename" },
+	{ "caption": "CTools: Go To Definition", "command": "ctools_goto_definition" },
+	{ "caption": "CTools: Go To Declaration", "command": "ctools_goto_declaration" },
+]
