@@ -6,35 +6,22 @@ import queue
 import threading
 import time
 
-from urllib.request import pathname2url, url2pathname
 from typing import List, Iterable, Union, Dict, Iterator
 
 import sublime
 import sublime_plugin
 
 from .api import lsp
+from .api.lsp import ServerOffline, DocumentURI
 from .third_party import mistune
 
 
 LOGGER = logging.getLogger(__name__)
-# LOGGER.setLevel(logging.DEBUG)  # module logging level
+LOGGER.setLevel(logging.DEBUG)  # module logging level
 STREAM_HANDLER = logging.StreamHandler()
 LOG_TEMPLATE = "%(levelname)s %(asctime)s %(filename)s:%(lineno)s  %(message)s"
 STREAM_HANDLER.setFormatter(logging.Formatter(LOG_TEMPLATE))
 LOGGER.addHandler(STREAM_HANDLER)
-
-
-class DocumentURI(str):
-    """document uri"""
-
-    @classmethod
-    def from_path(cls, file_name):
-        """from file name"""
-        return cls("file:%s" % pathname2url(file_name))
-
-    def to_path(self) -> str:
-        """convert to path"""
-        return url2pathname(self.lstrip("file:"))
 
 
 # custom kind
@@ -308,11 +295,18 @@ class CtoolsApplyDocumentChangeCommand(sublime_plugin.TextCommand):
 
         LOGGER.debug("apply changes to %s", self.view.file_name())
         LOGGER.debug("changes: %s", changes)
+        view: sublime.View = self.view
+        LOGGER.debug(f"{view.file_name()} is loading: {view.is_loading()}")
 
         list_change_item: List[ChangeItem] = [
             ChangeItem.from_rpc(self.view, change=change) for change in changes
         ]
+        try:
+            self.apply(edit, list_change_item)
+        except Exception as err:
+            LOGGER.error(err, exc_info=True)
 
+    def apply(self, edit, list_change_item):
         def sort_by_region(item: ChangeItem):
             return item.region
 
@@ -510,6 +504,10 @@ class Document:
 
     def apply_diagnostics(self, diagnostics_item: List[dict]):
 
+        if DOCUMENT_CHANGE_SYNC.busy:
+            LOGGER.debug("in document change process")
+            return
+
         LOGGER.debug("apply diagnostics to: %s", self.view.file_name())
         diagnostics = Diagnostics(self.view)
         diagnostics.set_diagnostics(diagnostics_item)
@@ -536,10 +534,6 @@ class Document:
 
 
 ACTIVE_DOCUMENT: ActiveDocument = ActiveDocument()
-
-
-class ServerOffline(Exception):
-    """server not running"""
 
 
 class ClangdClient(lsp.LSPClient):
@@ -627,10 +621,20 @@ class ClangdClient(lsp.LSPClient):
     def handle_textDocument_publishDiagnostics(self, params: Dict[str, object]):
         LOGGER.info("handle_textDocument_publishDiagnostics")
 
-        diagnostics = params["diagnostics"]
-        LOGGER.debug(diagnostics)
+        LOGGER.debug(params)
+        file_name = DocumentURI(params["uri"]).to_path()
+        working_version = self.get_document_version(
+            file_name, reset=False, increment=False
+        )
+        diagnostic_version = params["version"]
+        if working_version != diagnostic_version:
+            LOGGER.debug(
+                f"cancel publish diagnostic for invalid version, current: {working_version}, expected: {diagnostic_version}"
+            )
+            return
 
-        document = Document(DocumentURI(params["uri"]).to_path())
+        diagnostics = params["diagnostics"]
+        document = Document(file_name)
         document.clear_diagnostics()
 
         if not diagnostics:
@@ -724,287 +728,6 @@ class ClangdClient(lsp.LSPClient):
         LOGGER.info("handle_textDocument_declaration")
         LOGGER.debug("params: %s", params)
         ACTIVE_DOCUMENT.goto(params.result)
-
-    def cancelRequest(self):
-        self.transport.cancel_request(lsp.RPCMessage.cancel_request(self.request_id))
-
-    def initialize(self, project_path: str):
-        """initialize server"""
-
-        LOGGER.info("initialize")
-
-        if not self.server_running:
-            raise ServerOffline
-
-        params = {
-            "capabilities": {
-                "textDocument": {
-                    "codeAction": {
-                        "codeActionLiteralSupport": {
-                            "codeActionKind": {
-                                "valueSet": [
-                                    "",
-                                    "quickfix",
-                                    "refactor",
-                                    "refactor.extract",
-                                    "refactor.inline",
-                                    "refactor.rewrite",
-                                    "source",
-                                    "source.organizeImports",
-                                ]
-                            }
-                        },
-                        "dataSupport": True,
-                        "disabledSupport": True,
-                        "dynamicRegistration": True,
-                        "honorsChangeAnnotations": False,
-                        "isPreferredSupport": True,
-                        "resolveSupport": {"properties": ["edit"]},
-                    },
-                    "hover": {"contentFormat": ["markdown", "plaintext"],},
-                }
-            }
-        }
-        self.transport.request(
-            lsp.RPCMessage.request(self.get_request_id(), "initialize", params)
-        )
-
-    def textDocument_didOpen(self, file_name: str, source: str):
-        LOGGER.info("textDocument_didOpen")
-
-        if not self.server_running:
-            raise ServerOffline
-
-        params = {
-            "textDocument": {
-                "languageId": "cpp",
-                "text": source,
-                "uri": DocumentURI.from_path(file_name),
-                "version": self.get_document_version(),
-            }
-        }
-        self.transport.notify(
-            lsp.RPCMessage.notification("textDocument/didOpen", params)
-        )
-
-    def textDocument_didChange(self, path: str, changes: dict):
-        LOGGER.info("textDocument_didChange")
-
-        if not self.server_running:
-            raise ServerOffline
-
-        params = {
-            "contentChanges": changes,
-            "textDocument": {
-                "uri": DocumentURI.from_path(path),
-                "version": self.get_document_version(),
-            },
-        }
-        LOGGER.debug("didChange: %s", params)
-        self._hide_completion(changes[0]["text"])
-        self.transport.notify(
-            lsp.RPCMessage.notification("textDocument/didChange", params)
-        )
-
-    def textDocument_didClose(self, path: str):
-        LOGGER.info("textDocument_didClose")
-
-        if not self.server_running:
-            raise ServerOffline
-
-        params = {"textDocument": {"uri": DocumentURI.from_path(path)}}
-        self.transport.notify(
-            lsp.RPCMessage.notification("textDocument/didClose", params)
-        )
-
-    def textDocument_didSave(self, path: str):
-        LOGGER.info("textDocument_didSave")
-
-        if not self.server_running:
-            raise ServerOffline
-
-        params = {"textDocument": {"uri": DocumentURI.from_path(path)}}
-        self.transport.notify(
-            lsp.RPCMessage.notification("textDocument/didSave", params)
-        )
-
-    def textDocument_completion(self, path: str, row: int, col: int):
-        LOGGER.info("textDocument_completion")
-
-        if not self.server_running:
-            raise ServerOffline
-
-        params = {
-            "context": {"triggerKind": 1},  # TODO: adapt KIND
-            "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(path)},
-        }
-        self.transport.request(
-            lsp.RPCMessage.request(
-                self.get_request_id(), "textDocument/completion", params
-            )
-        )
-
-    def textDocument_hover(self, path: str, row: int, col: int):
-        LOGGER.info("textDocument_hover")
-
-        if not self.server_running:
-            raise ServerOffline
-        params = {
-            "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(path)},
-        }
-        self.transport.request(
-            lsp.RPCMessage.request(self.get_request_id(), "textDocument/hover", params)
-        )
-
-    def textDocument_formatting(self, path, tab_size=2):
-        LOGGER.info("textDocument_formatting")
-
-        if not self.server_running:
-            raise ServerOffline
-
-        params = {
-            "options": {"insertSpaces": True, "tabSize": tab_size},
-            "textDocument": {"uri": DocumentURI.from_path(path)},
-        }
-        self.transport.request(
-            lsp.RPCMessage.request(
-                self.get_request_id(), "textDocument/formatting", params
-            )
-        )
-
-    def textDocument_semanticTokens_full(self, path: str):
-        LOGGER.info("textDocument_semanticTokens_full")
-
-        if not self.server_running:
-            raise ServerOffline
-
-        params = {"textDocument": {"uri": DocumentURI.from_path(path),}}
-        self.transport.request(
-            lsp.RPCMessage.request(
-                self.get_request_id(), "textDocument/semanticTokens/full", params
-            )
-        )
-
-    def textDocument_documentLink(self, path: str):
-        LOGGER.info("textDocument_documentLink")
-
-        if not self.server_running:
-            raise ServerOffline
-
-        params = {"textDocument": {"uri": DocumentURI.from_path(path),}}
-        self.transport.request(
-            lsp.RPCMessage.request(
-                self.get_request_id(), "textDocument/documentLink", params
-            )
-        )
-
-    def textDocument_documentSymbol(self, path: str):
-        LOGGER.info("textDocument_documentSymbol")
-
-        if not self.server_running:
-            raise ServerOffline
-
-        params = {"textDocument": {"uri": DocumentURI.from_path(path),}}
-        self.transport.request(
-            lsp.RPCMessage.request(
-                self.get_request_id(), "textDocument/documentSymbol", params
-            )
-        )
-
-    def textDocument_codeAction(
-        self, path: str, start_line: int, start_col: int, end_line: int, end_col: int
-    ):
-        LOGGER.info("textDocument_codeAction")
-
-        if not self.server_running:
-            raise ServerOffline
-
-        params = {
-            "context": {"diagnostics": []},
-            "range": {
-                "end": {"character": end_col, "line": end_line},
-                "start": {"character": start_col, "line": start_line},
-            },
-            "textDocument": {"uri": DocumentURI.from_path(path)},
-        }
-        LOGGER.debug("codeAction params: %s", params)
-        self.transport.request(
-            lsp.RPCMessage.request(
-                self.get_request_id(), "textDocument/codeAction", params
-            )
-        )
-
-    def workspace_executeCommand(self, params: dict):
-
-        if not self.server_running:
-            raise ServerOffline
-
-        self.transport.request(
-            lsp.RPCMessage.request(
-                self.get_request_id(), "workspace/executeCommand", params
-            )
-        )
-
-    def textDocument_prepareRename(self, path, row, col):
-
-        if not self.server_running:
-            raise ServerOffline
-
-        params = {
-            "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(path)},
-        }
-        self.transport.request(
-            lsp.RPCMessage.request(
-                self.get_request_id(), "textDocument/prepareRename", params
-            )
-        )
-
-    def textDocument_rename(self, path, row, col, new_name):
-
-        if not self.server_running:
-            raise ServerOffline
-
-        params = {
-            "newName": new_name,
-            "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(path)},
-        }
-        self.transport.request(
-            lsp.RPCMessage.request(self.get_request_id(), "textDocument/rename", params)
-        )
-
-    def textDocument_definition(self, path, row, col):
-
-        if not self.server_running:
-            raise ServerOffline
-
-        params = {
-            "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(path)},
-        }
-        self.transport.request(
-            lsp.RPCMessage.request(
-                self.get_request_id(), "textDocument/definition", params
-            )
-        )
-
-    def textDocument_declaration(self, path, row, col):
-
-        if not self.server_running:
-            raise ServerOffline
-
-        params = {
-            "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(path)},
-        }
-        self.transport.request(
-            lsp.RPCMessage.request(
-                self.get_request_id(), "textDocument/declaration", params
-            )
-        )
 
 
 CLANGD_CLIENT = ClangdClient()
