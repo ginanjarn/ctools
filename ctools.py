@@ -483,11 +483,14 @@ class Document:
 
     def __init__(self, file_name: str, *, open_file: bool = False):
         view = sublime.active_window().find_open_file(file_name)
-        if not view and open_file:
+        if open_file:
             view = sublime.active_window().open_file(file_name)
 
-        self.view = view
-        self.window = view.window()
+        self.view: sublime.View = view
+        self.window: sublime.Window = view.window()
+
+    def focus_view(self):
+        self.window.focus_view(self.view)
 
     def apply_document_change(self, changes: List[dict]):
 
@@ -499,7 +502,6 @@ class Document:
                 continue
             break
 
-        # self.window.focus_view(self.view)
         self.view.run_command("ctools_apply_document_change", {"changes": changes})
 
     def apply_diagnostics(self, diagnostics_item: List[dict]):
