@@ -18,6 +18,10 @@ STREAM_HANDLER.setFormatter(logging.Formatter(LOG_TEMPLATE))
 LOGGER.addHandler(STREAM_HANDLER)
 
 
+class InvalidMessage(ValueError):
+    """message not comply to jsonrpc 2.0 specification"""
+
+
 class ContentIncomplete(ValueError):
     """expected size less than defined"""
 
@@ -46,18 +50,22 @@ class DocumentURI(str):
 class RPCMessage(dict):
     """rpc message"""
 
+    JSONRPC_VERSION = "2.0"
+    HEADER_ENCODING = "ascii"
+    CONTENT_ENCODING = "utf-8"
+
     def __init__(self, mapping=None, **kwargs):
-        kwargs["jsonrpc"] = "2.0"
         super().__init__(kwargs)
         if mapping:
             self.update(mapping)
 
     def to_bytes(self) -> bytes:
+        self["jsonrpc"] = self.JSONRPC_VERSION
         message_str = json.dumps(self)
-        message_encoded = message_str.encode("utf-8")
+        message_encoded = message_str.encode(self.CONTENT_ENCODING)
 
         header = f"Content-Length: {len(message_encoded)}"
-        return b"\r\n\r\n".join([header.encode("ascii"), message_encoded])
+        return b"\r\n\r\n".join([header.encode(self.HEADER_ENCODING), message_encoded])
 
     _content_length_pattern = re.compile(r"^Content-Length: (\d+)$", flags=re.MULTILINE)
 
@@ -72,10 +80,10 @@ class RPCMessage(dict):
     def from_bytes(cls, b: bytes, /):
         try:
             header, content = b.split(b"\r\n\r\n")
-        except Exception as err:
-            raise ValueError(f"Unable get Content-Length, {err}")
+        except (ValueError, TypeError, AttributeError) as err:
+            raise InvalidMessage(f"Unable get Content-Length, {err}") from err
 
-        defined_length = cls.get_content_length(header.decode("ascii"))
+        defined_length = cls.get_content_length(header.decode(cls.HEADER_ENCODING))
         expected_length = len(content)
 
         if expected_length < defined_length:
@@ -83,16 +91,23 @@ class RPCMessage(dict):
                 f"want {defined_length}, expected {expected_length}"
             )
         elif expected_length > defined_length:
-            raise ContentIncomplete(
-                f"want {defined_length}, expected {expected_length}"
-            )
+            raise ContentOverflow(f"want {defined_length}, expected {expected_length}")
 
-        message_str = content.decode("utf-8")
-        return cls(json.loads(message_str))
+        try:
+            message_str = content.decode(cls.CONTENT_ENCODING)
+            message = json.loads(message_str)
+
+            if message["jsonrpc"] != cls.JSONRPC_VERSION:
+                raise ValueError("invalid jsonrpc version")
+
+        except Exception as err:
+            raise InvalidMessage(err) from err
+        else:
+            return cls(message)
 
     @classmethod
     def notification(cls, method, params):
-        return cls(method=method, params=params)
+        return cls({"method": method, "params": params})
 
     @classmethod
     def request(cls, id_, method, params):
@@ -155,7 +170,6 @@ class LSPClient:
 
         # project status
         self.is_initialized = False
-        self.cached_document = {}
 
         # request
         self.request_id = 0
@@ -337,7 +351,9 @@ class LSPClient:
             raise ServerOffline
 
         if self.active_document == file_name:
+            LOGGER.debug("document already opened")
             return
+
         self.active_document = file_name
 
         params = {
@@ -350,7 +366,7 @@ class LSPClient:
         }
         self.transport.notify(RPCMessage.notification("textDocument/didOpen", params))
 
-    def textDocument_didChange(self, path: str, changes: dict):
+    def textDocument_didChange(self, file_name: str, changes: dict):
         LOGGER.info("textDocument_didChange")
 
         if not self.server_running:
@@ -359,33 +375,33 @@ class LSPClient:
         params = {
             "contentChanges": changes,
             "textDocument": {
-                "uri": DocumentURI.from_path(path),
-                "version": self.get_document_version(path, reset=False),
+                "uri": DocumentURI.from_path(file_name),
+                "version": self.get_document_version(file_name, reset=False),
             },
         }
         LOGGER.debug("didChange: %s", params)
         self._hide_completion(changes[0]["text"])
         self.transport.notify(RPCMessage.notification("textDocument/didChange", params))
 
-    def textDocument_didClose(self, path: str):
+    def textDocument_didClose(self, file_name: str):
         LOGGER.info("textDocument_didClose")
 
         if not self.server_running:
             raise ServerOffline
 
-        params = {"textDocument": {"uri": DocumentURI.from_path(path)}}
+        params = {"textDocument": {"uri": DocumentURI.from_path(file_name)}}
         self.transport.notify(RPCMessage.notification("textDocument/didClose", params))
 
-    def textDocument_didSave(self, path: str):
+    def textDocument_didSave(self, file_name: str):
         LOGGER.info("textDocument_didSave")
 
         if not self.server_running:
             raise ServerOffline
 
-        params = {"textDocument": {"uri": DocumentURI.from_path(path)}}
+        params = {"textDocument": {"uri": DocumentURI.from_path(file_name)}}
         self.transport.notify(RPCMessage.notification("textDocument/didSave", params))
 
-    def textDocument_completion(self, path: str, row: int, col: int):
+    def textDocument_completion(self, file_name: str, row: int, col: int):
         LOGGER.info("textDocument_completion")
 
         if not self.server_running:
@@ -394,26 +410,26 @@ class LSPClient:
         params = {
             "context": {"triggerKind": 1},  # TODO: adapt KIND
             "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(path)},
+            "textDocument": {"uri": DocumentURI.from_path(file_name)},
         }
         self.transport.request(
             RPCMessage.request(self.get_request_id(), "textDocument/completion", params)
         )
 
-    def textDocument_hover(self, path: str, row: int, col: int):
+    def textDocument_hover(self, file_name: str, row: int, col: int):
         LOGGER.info("textDocument_hover")
 
         if not self.server_running:
             raise ServerOffline
         params = {
             "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(path)},
+            "textDocument": {"uri": DocumentURI.from_path(file_name)},
         }
         self.transport.request(
             RPCMessage.request(self.get_request_id(), "textDocument/hover", params)
         )
 
-    def textDocument_formatting(self, path, tab_size=2):
+    def textDocument_formatting(self, file_name, tab_size=2):
         LOGGER.info("textDocument_formatting")
 
         if not self.server_running:
@@ -421,45 +437,45 @@ class LSPClient:
 
         params = {
             "options": {"insertSpaces": True, "tabSize": tab_size},
-            "textDocument": {"uri": DocumentURI.from_path(path)},
+            "textDocument": {"uri": DocumentURI.from_path(file_name)},
         }
         self.transport.request(
             RPCMessage.request(self.get_request_id(), "textDocument/formatting", params)
         )
 
-    def textDocument_semanticTokens_full(self, path: str):
+    def textDocument_semanticTokens_full(self, file_name: str):
         LOGGER.info("textDocument_semanticTokens_full")
 
         if not self.server_running:
             raise ServerOffline
 
-        params = {"textDocument": {"uri": DocumentURI.from_path(path),}}
+        params = {"textDocument": {"uri": DocumentURI.from_path(file_name),}}
         self.transport.request(
             RPCMessage.request(
                 self.get_request_id(), "textDocument/semanticTokens/full", params
             )
         )
 
-    def textDocument_documentLink(self, path: str):
+    def textDocument_documentLink(self, file_name: str):
         LOGGER.info("textDocument_documentLink")
 
         if not self.server_running:
             raise ServerOffline
 
-        params = {"textDocument": {"uri": DocumentURI.from_path(path),}}
+        params = {"textDocument": {"uri": DocumentURI.from_path(file_name),}}
         self.transport.request(
             RPCMessage.request(
                 self.get_request_id(), "textDocument/documentLink", params
             )
         )
 
-    def textDocument_documentSymbol(self, path: str):
+    def textDocument_documentSymbol(self, file_name: str):
         LOGGER.info("textDocument_documentSymbol")
 
         if not self.server_running:
             raise ServerOffline
 
-        params = {"textDocument": {"uri": DocumentURI.from_path(path),}}
+        params = {"textDocument": {"uri": DocumentURI.from_path(file_name),}}
         self.transport.request(
             RPCMessage.request(
                 self.get_request_id(), "textDocument/documentSymbol", params
@@ -467,7 +483,12 @@ class LSPClient:
         )
 
     def textDocument_codeAction(
-        self, path: str, start_line: int, start_col: int, end_line: int, end_col: int
+        self,
+        file_name: str,
+        start_line: int,
+        start_col: int,
+        end_line: int,
+        end_col: int,
     ):
         LOGGER.info("textDocument_codeAction")
 
@@ -480,7 +501,7 @@ class LSPClient:
                 "end": {"character": end_col, "line": end_line},
                 "start": {"character": start_col, "line": start_line},
             },
-            "textDocument": {"uri": DocumentURI.from_path(path)},
+            "textDocument": {"uri": DocumentURI.from_path(file_name)},
         }
         LOGGER.debug("codeAction params: %s", params)
         self.transport.request(
@@ -498,14 +519,14 @@ class LSPClient:
             )
         )
 
-    def textDocument_prepareRename(self, path, row, col):
+    def textDocument_prepareRename(self, file_name, row, col):
 
         if not self.server_running:
             raise ServerOffline
 
         params = {
             "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(path)},
+            "textDocument": {"uri": DocumentURI.from_path(file_name)},
         }
         self.transport.request(
             RPCMessage.request(
@@ -513,7 +534,7 @@ class LSPClient:
             )
         )
 
-    def textDocument_rename(self, path, row, col, new_name):
+    def textDocument_rename(self, file_name, row, col, new_name):
 
         if not self.server_running:
             raise ServerOffline
@@ -521,33 +542,33 @@ class LSPClient:
         params = {
             "newName": new_name,
             "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(path)},
+            "textDocument": {"uri": DocumentURI.from_path(file_name)},
         }
         self.transport.request(
             RPCMessage.request(self.get_request_id(), "textDocument/rename", params)
         )
 
-    def textDocument_definition(self, path, row, col):
+    def textDocument_definition(self, file_name, row, col):
 
         if not self.server_running:
             raise ServerOffline
 
         params = {
             "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(path)},
+            "textDocument": {"uri": DocumentURI.from_path(file_name)},
         }
         self.transport.request(
             RPCMessage.request(self.get_request_id(), "textDocument/definition", params)
         )
 
-    def textDocument_declaration(self, path, row, col):
+    def textDocument_declaration(self, file_name, row, col):
 
         if not self.server_running:
             raise ServerOffline
 
         params = {
             "position": {"character": col, "line": row},
-            "textDocument": {"uri": DocumentURI.from_path(path)},
+            "textDocument": {"uri": DocumentURI.from_path(file_name)},
         }
         self.transport.request(
             RPCMessage.request(
@@ -558,6 +579,8 @@ class LSPClient:
 
 class StandardIO(AbstractTransport):
     """standard io Transport implementation"""
+
+    BUFFER_LENGTH = 4096
 
     def __init__(self, process_cmd: list):
 
@@ -684,14 +707,16 @@ class StandardIO(AbstractTransport):
                 message = RPCMessage.from_bytes(b"".join(buffer))
             except ContentIncomplete:
                 pass
-            except (ContentOverflow, ValueError):
+            except (ContentOverflow, InvalidMessage) as err:
+                LOGGER.debug(repr(err))
                 buffer = []
             else:
                 self._process_response_message(message)
                 buffer = []
 
-            buf = stdout.read(2048)
+            buf = stdout.read(self.BUFFER_LENGTH)
             if not buf:
+                LOGGER.debug("stdout closed")
                 return
 
             buffer.append(buf)
@@ -701,7 +726,7 @@ class StandardIO(AbstractTransport):
 
         while True:
             stderr = self.server_process.stderr
-            line = stderr.read(2048)
+            line = stderr.read(self.BUFFER_LENGTH)
 
             if not line:
                 LOGGER.debug("stderr closed")
