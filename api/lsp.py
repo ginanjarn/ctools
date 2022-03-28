@@ -182,17 +182,8 @@ class LSPClient:
         self.document_version_map[file_name] = cur_version
         return cur_version
 
-    def run_server(self, clangd="clangd", *args):
-        commands = [clangd]
-        commands.extend(args)
-        try:
-            self.transport = StandardIO(commands)
-            self._register_commands()
-
-        except Exception as err:
-            LOGGER.error("running server error", exc_info=True)
-        else:
-            self.server_running = True
+    def run_server(self, executable="", *args):
+        raise NotImplementedError()
 
     # server message handler
 

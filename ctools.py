@@ -12,7 +12,7 @@ import sublime
 import sublime_plugin
 
 from .api import lsp
-from .api.lsp import ServerOffline, DocumentURI
+from .api.lsp import StandardIO, ServerOffline, DocumentURI
 from .third_party import mistune
 
 
@@ -546,6 +546,18 @@ class ClangdClient(lsp.LSPClient):
         self.transport: lsp.AbstractTransport = None
 
         self.completion_commit_character = []
+
+    def run_server(self, clangd="clangd", *args):
+        commands = [clangd]
+        commands.extend(args)
+        try:
+            self.transport = StandardIO(commands)
+            self._register_commands()
+
+        except Exception as err:
+            LOGGER.error("running server error", exc_info=True)
+        else:
+            self.server_running = True
 
     def server_running(self):
         return bool(self.transport)
