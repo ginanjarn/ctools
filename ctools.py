@@ -553,9 +553,9 @@ class ClangdClient(lsp.LSPClient):
         self.transport: lsp.AbstractTransport = None
 
         self.completion_commit_character = []
-        # self.initialize_options = {
-        #     "initializationOptions": {"clangdFileStatus": True, "fallbackFlags": []}
-        # }
+        self.initialize_options = {
+            "initializationOptions": {"clangdFileStatus": True, "fallbackFlags": []}
+        }
 
     def run_server(self, clangd="clangd", *args):
         commands = [clangd]
@@ -564,11 +564,11 @@ class ClangdClient(lsp.LSPClient):
             self.transport = StandardIO(commands)
             self._register_commands()
 
-            # # clangd option
-            # self.transport.register_command(
-            #     "textDocument/clangd.fileStatus",
-            #     self.handle_textDocument_clangd_fileStatus,
-            # )
+            # clangd option
+            self.transport.register_command(
+                "textDocument/clangd.fileStatus",
+                self.handle_textDocument_clangd_fileStatus,
+            )
 
         except Exception as err:
             LOGGER.error("running server error", exc_info=True)
@@ -759,11 +759,12 @@ class ClangdClient(lsp.LSPClient):
         LOGGER.debug("params: %s", params)
         ACTIVE_DOCUMENT.goto(params.result)
 
-    # def handle_textDocument_clangd_fileStatus(self, params: lsp.RPCMessage):
-    #     LOGGER.info("handle_textDocument_clangd_fileStatus")
-    #     LOGGER.debug("params: %s", params)
-    #     document = Document(lsp.DocumentURI(params["uri"]).to_path())
-    #     document.set_status(params["state"])
+    def handle_textDocument_clangd_fileStatus(self, params: lsp.RPCMessage):
+        LOGGER.info("handle_textDocument_clangd_fileStatus")
+        LOGGER.debug("params: %s", params)
+        document = Document(lsp.DocumentURI(params["uri"]).to_path())
+        file_status = params["state"]
+        document.set_status(f"clangd [{file_status}] ")
 
 
 CLANGD_CLIENT = ClangdClient()
