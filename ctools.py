@@ -125,7 +125,7 @@ class DiagnosticItem:
 class Diagnostics:
     """Diagnostic hold diagnostic data at view"""
 
-    region_key = {
+    REGION_KEYS = {
         1: "ctools.error",
         2: "ctools.warning",
         3: "ctools.information",
@@ -155,6 +155,12 @@ class Diagnostics:
             ),
         )
 
+    # Diagnostic severity
+    ERROR = 1
+    WARNING = 2
+    INFO = 3
+    HINT = 4
+
     def set_diagnostics(self, diagnostics: List[dict]):
         """set diagnostic
 
@@ -162,43 +168,43 @@ class Diagnostics:
         * apply syntax highlight
         """
 
-        adapted_diagnostic = [
-            DiagnosticItem.from_rpc(self.view, diagnostic=diagnostic)
-            for diagnostic in diagnostics
-        ]
-
         error_region = []
         warning_region = []
         information_region = []
         hint_region = []
 
-        for diagnostic in adapted_diagnostic:
+        diagnostic_items = [
+            DiagnosticItem.from_rpc(self.view, diagnostic=diagnostic)
+            for diagnostic in diagnostics
+        ]
+
+        for diagnostic in diagnostic_items:
             row, col = self.view.rowcol(diagnostic.region.a)
             self.message_map[(row, col)] = diagnostic.message
 
-            if diagnostic.severity == 1:
+            if diagnostic.severity == self.ERROR:
                 error_region.append(diagnostic.region)
-            elif diagnostic.severity == 2:
+            elif diagnostic.severity == self.WARNING:
                 warning_region.append(diagnostic.region)
-            elif diagnostic.severity == 3:
+            elif diagnostic.severity == self.INFO:
                 information_region.append(diagnostic.region)
-            elif diagnostic.severity == 4:
+            elif diagnostic.severity == self.HINT:
                 hint_region.append(diagnostic.region)
 
         # clear if any highlight in view
         self.erase_highlight()
 
         self.add_regions(
-            key=self.region_key[1], regions=error_region, error_region=True
+            key=self.REGION_KEYS[self.ERROR], regions=error_region, error_region=True
         )
-        self.add_regions(key=self.region_key[2], regions=warning_region)
-        self.add_regions(key=self.region_key[3], regions=information_region)
-        self.add_regions(key=self.region_key[4], regions=hint_region)
+        self.add_regions(key=self.REGION_KEYS[self.WARNING], regions=warning_region)
+        self.add_regions(key=self.REGION_KEYS[self.INFO], regions=information_region)
+        self.add_regions(key=self.REGION_KEYS[self.HINT], regions=hint_region)
 
     def erase_highlight(self):
         """erase highlight"""
 
-        for _, value in Diagnostics.region_key.items():
+        for _, value in self.REGION_KEYS.items():
             self.view.erase_regions(value)
 
     def show_panel(self) -> None:
@@ -330,7 +336,7 @@ class ActiveDocument:
 
     def __init__(self):
 
-        self.completion_result = None
+        self._completion_result = None
         self._window: sublime.Window = None
         self._view: sublime.View = None
 
@@ -356,13 +362,13 @@ class ActiveDocument:
         self._view = value
 
     def get_completion_result(self):
-        result = self.completion_result
-        self.completion_result = None
+        result = self._completion_result
+        self._completion_result = None
         return result
 
     def show_completions(self, completions: List[dict]):
         completion_list = CompletionList.from_rpc(completions)
-        self.completion_result = completion_list
+        self._completion_result = completion_list
 
         self.view.run_command(
             "auto_complete",
@@ -462,32 +468,33 @@ class ActiveDocument:
         LOGGER.debug("goto: %s", params)
 
         def get_location(location: Dict[str, object]):
-            path = DocumentURI(location["uri"]).to_path()
+            file_name = DocumentURI(location["uri"]).to_path()
             start = location["range"]["start"]
             row, col = start["line"] + 1, start["character"] + 1
-            return f"{path}:{row}:{col}"
+            return f"{file_name}:{row}:{col}"
 
-        paths = [get_location(item) for item in params]
+        locations = [get_location(item) for item in params]
 
         def on_select(index=-1):
             if index > -1:
-                self.window.open_file(paths[index], flags=sublime.ENCODED_POSITION)
+                self.window.open_file(locations[index], flags=sublime.ENCODED_POSITION)
 
         self.window.show_quick_panel(
-            items=paths, on_select=on_select, flags=sublime.MONOSPACE_FONT
+            items=locations, on_select=on_select, flags=sublime.MONOSPACE_FONT
         )
 
 
 class Document:
     """Document handler"""
 
-    def __init__(self, file_name: str, *, open_file: bool = False):
-        view = sublime.active_window().find_open_file(file_name)
-        if open_file:
-            view = sublime.active_window().open_file(file_name)
+    def __init__(self, file_name: str, *, force_open: bool = False):
 
-        self.view: sublime.View = view
-        self.window: sublime.Window = view.window()
+        if force_open:
+            self.view: sublime.View = sublime.active_window().open_file(file_name)
+        else:
+            self.view: sublime.View = sublime.active_window().find_open_file(file_name)
+
+        self.window: sublime.Window = self.view.window()
 
     def focus_view(self):
         self.window.focus_view(self.view)
@@ -546,6 +553,9 @@ class ClangdClient(lsp.LSPClient):
         self.transport: lsp.AbstractTransport = None
 
         self.completion_commit_character = []
+        # self.initialize_options = {
+        #     "initializationOptions": {"clangdFileStatus": True, "fallbackFlags": []}
+        # }
 
     def run_server(self, clangd="clangd", *args):
         commands = [clangd]
@@ -553,6 +563,12 @@ class ClangdClient(lsp.LSPClient):
         try:
             self.transport = StandardIO(commands)
             self._register_commands()
+
+            # # clangd option
+            # self.transport.register_command(
+            #     "textDocument/clangd.fileStatus",
+            #     self.handle_textDocument_clangd_fileStatus,
+            # )
 
         except Exception as err:
             LOGGER.error("running server error", exc_info=True)
@@ -687,7 +703,7 @@ class ClangdClient(lsp.LSPClient):
 
             LOGGER.debug("apply changes to: %s", file_name)
             DOCUMENT_CHANGE_SYNC.set_busy()
-            document = Document(DocumentURI(file_name).to_path(), open_file=True)
+            document = Document(DocumentURI(file_name).to_path(), force_open=True)
 
             try:
                 document.apply_document_change(text_changes)
@@ -742,6 +758,12 @@ class ClangdClient(lsp.LSPClient):
         LOGGER.info("handle_textDocument_declaration")
         LOGGER.debug("params: %s", params)
         ACTIVE_DOCUMENT.goto(params.result)
+
+    # def handle_textDocument_clangd_fileStatus(self, params: lsp.RPCMessage):
+    #     LOGGER.info("handle_textDocument_clangd_fileStatus")
+    #     LOGGER.debug("params: %s", params)
+    #     document = Document(lsp.DocumentURI(params["uri"]).to_path())
+    #     document.set_status(params["state"])
 
 
 CLANGD_CLIENT = ClangdClient()
@@ -867,6 +889,32 @@ class EventListener(sublime_plugin.EventListener):
 
             CLANGD_CLIENT.textDocument_hover(file_name, row, col)
 
+    def on_load_async(self, view: sublime.View) -> None:
+        file_name = view.file_name()
+        if not (valid_source(view) and CLANGD_CLIENT.is_initialized):
+            return
+
+        source = view.substr(sublime.Region(0, view.size()))
+        try:
+            CLANGD_CLIENT.textDocument_didOpen(file_name, source)
+            # set current active view
+            ACTIVE_DOCUMENT.view = view
+        except ServerOffline:
+            pass
+
+    def on_reload_async(self, view: sublime.View) -> None:
+        file_name = view.file_name()
+        if not (valid_source(view) and CLANGD_CLIENT.is_initialized):
+            return
+
+        source = view.substr(sublime.Region(0, view.size()))
+        try:
+            CLANGD_CLIENT.textDocument_didOpen(file_name, source)
+            # set current active view
+            ACTIVE_DOCUMENT.view = view
+        except ServerOffline:
+            pass
+
     def on_activated_async(self, view: sublime.View) -> None:
         file_name = view.file_name()
         if not (valid_source(view) and CLANGD_CLIENT.is_initialized):
@@ -938,6 +986,7 @@ class TextChangeListener(sublime_plugin.TextChangeListener):
             )
 
         try:
+            LOGGER.debug(f"notify change for {file_name}\n{content_changes}")
             CLANGD_CLIENT.cancelRequest()
             CLANGD_CLIENT.textDocument_didChange(file_name, content_changes)
         except ServerOffline:

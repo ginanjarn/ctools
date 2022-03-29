@@ -81,7 +81,9 @@ class RPCMessage(dict):
         try:
             header, content = b.split(b"\r\n\r\n")
         except (ValueError, TypeError, AttributeError) as err:
-            raise InvalidMessage(f"Unable get Content-Length, {err}") from err
+            raise InvalidMessage(
+                f"Unable get Content-Length, {repr(err)}, content: {repr(b)}"
+            ) from err
 
         defined_length = cls.get_content_length(header.decode(cls.HEADER_ENCODING))
         expected_length = len(content)
@@ -171,6 +173,8 @@ class LSPClient:
         # project status
         self.is_initialized = False
 
+        self.initialize_options = {}
+
         # request
         self.request_id = 0
         # active document
@@ -215,6 +219,9 @@ class LSPClient:
 
     def handle_textDocument_semanticTokens_full(self, params: RPCMessage):
         """handle document semantic tokens"""
+
+    def handle_workspace_semanticTokens_refresh(self, params: RPCMessage):
+        """handle workspace semanticTokens refresh request"""
 
     def handle_workspace_applyEdit(self, params: RPCMessage):
         """handle workspace apply edit"""
@@ -282,6 +289,10 @@ class LSPClient:
             self.handle_textDocument_semanticTokens_full,
         )
         self.transport.register_command(
+            "workspace/semanticTokens/refresh",
+            self.handle_workspace_semanticTokens_refresh,
+        )
+        self.transport.register_command(
             "workspace/applyEdit", self.handle_workspace_applyEdit
         )
         self.transport.register_command(
@@ -313,7 +324,20 @@ class LSPClient:
 
         params = {
             "capabilities": {
+                "general": {
+                    "markdown": {"parser": "marked", "version": "1.1.0"},
+                    "regularExpressions": {"engine": "ECMAScript", "version": "ES2020"},
+                    "staleRequestSupport": {
+                        "cancel": True,
+                        "retryOnContentModified": [
+                            "textDocument/semanticTokens/full",
+                            "textDocument/semanticTokens/range",
+                            "textDocument/semanticTokens/full/delta",
+                        ],
+                    },
+                },
                 "textDocument": {
+                    "callHierarchy": {"dynamicRegistration": True},
                     "codeAction": {
                         "codeActionLiteralSupport": {
                             "codeActionKind": {
@@ -336,10 +360,283 @@ class LSPClient:
                         "isPreferredSupport": True,
                         "resolveSupport": {"properties": ["edit"]},
                     },
-                    "hover": {"contentFormat": ["markdown", "plaintext"],},
+                    "codeLens": {"dynamicRegistration": True},
+                    "colorProvider": {"dynamicRegistration": True},
+                    "completion": {
+                        "completionItem": {
+                            "commitCharactersSupport": True,
+                            "deprecatedSupport": True,
+                            "documentationFormat": ["markdown", "plaintext"],
+                            "insertReplaceSupport": True,
+                            "insertTextModeSupport": {"valueSet": [1, 2]},
+                            "labelDetailsSupport": True,
+                            "preselectSupport": True,
+                            "resolveSupport": {
+                                "properties": [
+                                    "documentation",
+                                    "detail",
+                                    "additionalTextEdits",
+                                ]
+                            },
+                            "snippetSupport": True,
+                            "tagSupport": {"valueSet": [1]},
+                        },
+                        "completionItemKind": {
+                            "valueSet": [
+                                1,
+                                2,
+                                3,
+                                4,
+                                5,
+                                6,
+                                7,
+                                8,
+                                9,
+                                10,
+                                11,
+                                12,
+                                13,
+                                14,
+                                15,
+                                16,
+                                17,
+                                18,
+                                19,
+                                20,
+                                21,
+                                22,
+                                23,
+                                24,
+                                25,
+                            ]
+                        },
+                        "contextSupport": True,
+                        "dynamicRegistration": True,
+                        "editsNearCursor": True,
+                    },
+                    "declaration": {"dynamicRegistration": True, "linkSupport": True},
+                    "definition": {"dynamicRegistration": True, "linkSupport": True},
+                    "documentHighlight": {"dynamicRegistration": True},
+                    "documentLink": {
+                        "dynamicRegistration": True,
+                        "tooltipSupport": True,
+                    },
+                    "documentSymbol": {
+                        "dynamicRegistration": True,
+                        "hierarchicalDocumentSymbolSupport": True,
+                        "labelSupport": True,
+                        "symbolKind": {
+                            "valueSet": [
+                                1,
+                                2,
+                                3,
+                                4,
+                                5,
+                                6,
+                                7,
+                                8,
+                                9,
+                                10,
+                                11,
+                                12,
+                                13,
+                                14,
+                                15,
+                                16,
+                                17,
+                                18,
+                                19,
+                                20,
+                                21,
+                                22,
+                                23,
+                                24,
+                                25,
+                                26,
+                            ]
+                        },
+                        "tagSupport": {"valueSet": [1]},
+                    },
+                    "foldingRange": {
+                        "dynamicRegistration": True,
+                        "lineFoldingOnly": True,
+                        "rangeLimit": 5000,
+                    },
+                    "formatting": {"dynamicRegistration": True},
+                    "hover": {
+                        "contentFormat": ["markdown", "plaintext"],
+                        "dynamicRegistration": True,
+                    },
+                    "implementation": {
+                        "dynamicRegistration": True,
+                        "linkSupport": True,
+                    },
+                    "linkedEditingRange": {"dynamicRegistration": True},
+                    "onTypeFormatting": {"dynamicRegistration": True},
+                    "publishDiagnostics": {
+                        "codeDescriptionSupport": True,
+                        "dataSupport": True,
+                        "relatedInformation": True,
+                        "tagSupport": {"valueSet": [1, 2]},
+                        "versionSupport": False,
+                    },
+                    "rangeFormatting": {"dynamicRegistration": True},
+                    "references": {"dynamicRegistration": True},
+                    "rename": {
+                        "dynamicRegistration": True,
+                        "honorsChangeAnnotations": True,
+                        "prepareSupport": True,
+                        "prepareSupportDefaultBehavior": 1,
+                    },
+                    "selectionRange": {"dynamicRegistration": True},
+                    "semanticTokens": {
+                        "dynamicRegistration": True,
+                        "formats": ["relative"],
+                        "multilineTokenSupport": False,
+                        "overlappingTokenSupport": False,
+                        "requests": {"full": {"delta": True}, "range": True},
+                        "tokenModifiers": [
+                            "declaration",
+                            "definition",
+                            "readonly",
+                            "static",
+                            "deprecated",
+                            "abstract",
+                            "async",
+                            "modification",
+                            "documentation",
+                            "defaultLibrary",
+                        ],
+                        "tokenTypes": [
+                            "namespace",
+                            "type",
+                            "class",
+                            "enum",
+                            "interface",
+                            "struct",
+                            "typeParameter",
+                            "parameter",
+                            "variable",
+                            "property",
+                            "enumMember",
+                            "event",
+                            "function",
+                            "method",
+                            "macro",
+                            "keyword",
+                            "modifier",
+                            "comment",
+                            "string",
+                            "number",
+                            "regexp",
+                            "operator",
+                        ],
+                    },
+                    "signatureHelp": {
+                        "contextSupport": True,
+                        "dynamicRegistration": True,
+                        "signatureInformation": {
+                            "activeParameterSupport": True,
+                            "documentationFormat": ["markdown", "plaintext"],
+                            "parameterInformation": {"labelOffsetSupport": True},
+                        },
+                    },
+                    "synchronization": {
+                        "didSave": True,
+                        "dynamicRegistration": True,
+                        "willSave": True,
+                        "willSaveWaitUntil": True,
+                    },
+                    "typeDefinition": {
+                        "dynamicRegistration": True,
+                        "linkSupport": True,
+                    },
+                },
+                "window": {
+                    "showDocument": {"support": True},
+                    "showMessage": {
+                        "messageActionItem": {"additionalPropertiesSupport": True}
+                    },
+                    "workDoneProgress": True,
+                },
+                "workspace": {
+                    "applyEdit": True,
+                    "codeLens": {"refreshSupport": True},
+                    "configuration": True,
+                    "didChangeConfiguration": {"dynamicRegistration": True},
+                    "didChangeWatchedFiles": {"dynamicRegistration": True},
+                    "executeCommand": {"dynamicRegistration": True},
+                    "fileOperations": {
+                        "didCreate": True,
+                        "didDelete": True,
+                        "didRename": True,
+                        "dynamicRegistration": True,
+                        "willCreate": True,
+                        "willDelete": True,
+                        "willRename": True,
+                    },
+                    "semanticTokens": {"refreshSupport": True},
+                    "symbol": {
+                        "dynamicRegistration": True,
+                        "symbolKind": {
+                            "valueSet": [
+                                1,
+                                2,
+                                3,
+                                4,
+                                5,
+                                6,
+                                7,
+                                8,
+                                9,
+                                10,
+                                11,
+                                12,
+                                13,
+                                14,
+                                15,
+                                16,
+                                17,
+                                18,
+                                19,
+                                20,
+                                21,
+                                22,
+                                23,
+                                24,
+                                25,
+                                26,
+                            ]
+                        },
+                        "tagSupport": {"valueSet": [1]},
+                    },
+                    "workspaceEdit": {
+                        "changeAnnotationSupport": {"groupsOnLabel": True},
+                        "documentChanges": True,
+                        "failureHandling": "textOnlyTransactional",
+                        "normalizesLineEndings": True,
+                        "resourceOperations": ["create", "rename", "delete"],
+                    },
+                    "workspaceFolders": True,
+                },
+            },
+            "clientInfo": {"name": "Sublime Text", "version": "4126"},
+            # "initializationOptions": {"clangdFileStatus": True, "fallbackFlags": []},
+            "locale": "en-us",
+            "processId": os.getpid(),
+            "rootPath": project_path,
+            "rootUri": DocumentURI.from_path(project_path),
+            "trace": "off",
+            "workspaceFolders": [
+                {
+                    "name": os.path.basename(project_path),
+                    "uri": DocumentURI.from_path(project_path),
                 }
-            }
+            ],
         }
+        if self.initialize_options:
+            params.update(self.initialize_options)
+
         self.transport.request(
             RPCMessage.request(self.get_request_id(), "initialize", params)
         )
