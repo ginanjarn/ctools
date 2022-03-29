@@ -59,6 +59,10 @@ class RPCMessage(dict):
         if mapping:
             self.update(mapping)
 
+    @classmethod
+    def from_str(cls, s: str, /):
+        return cls(json.loads(s))
+
     def to_bytes(self) -> bytes:
         self["jsonrpc"] = self.JSONRPC_VERSION
         message_str = json.dumps(self)
@@ -130,6 +134,88 @@ class RPCMessage(dict):
     @property
     def result(self):
         return self.get("result")
+
+
+class Stream:
+    r"""stream object
+
+    This class handle JSONRPC stream format
+        '<header>\r\n<content>'
+    
+    Header items must seperated by '\r\n'
+    """
+
+    def __init__(self, content: bytes = b""):
+        self.buffer = [content] if content else []
+        self._lock = threading.Lock()
+
+    def put(self, data: bytes) -> None:
+        """put stream data"""
+        with self._lock:
+            self.buffer.append(data)
+
+    _content_length_pattern = re.compile(r"^Content-Length: (\d+)")
+
+    def _get_content_length(self, headers: bytes) -> int:
+        """get Content-Length
+
+        Raises:
+        -------
+        ValueError
+        """
+
+        for line in headers.splitlines():
+            match = self._content_length_pattern.match(line.decode("ascii"))
+            if match:
+                return int(match.group(1))
+
+        raise ValueError("unable find Content-Length")
+
+    def get_content(self) -> bytes:
+        """read stream data
+
+        Returns
+        ------
+        content: bytes
+
+        Raises:
+        -------
+        InvalidMessage
+        EOFError
+        ContentIncomplete
+        """
+
+        with self._lock:
+
+            buffers = b"".join(self.buffer)
+            separator = b"\r\n\r\n"
+
+            if not buffers:
+                raise EOFError("buffer empty")
+
+            try:
+                header_end = buffers.index(separator)
+                content_length = self._get_content_length(buffers[:header_end])
+
+            except ValueError as err:
+                # clean up buffer
+                self.buffer = []
+
+                LOGGER.error(err)
+                LOGGER.debug("buffer: %s", buffers)
+                raise InvalidMessage(f"header error: {repr(err)}") from err
+
+            start_index = header_end + len(separator)
+            end_index = start_index + content_length
+            content = buffers[start_index:end_index]
+            recv_len = len(content)
+
+            if recv_len < content_length:
+                raise ContentIncomplete(f"want: {content_length}, expected: {recv_len}")
+
+            # replace buffer
+            self.buffer = [buffers[end_index:]]
+            return content
 
 
 class AbstractTransport(ABC):
@@ -997,26 +1083,30 @@ class StandardIO(AbstractTransport):
         """listen stdout task"""
 
         stdout = self.server_process.stdout
-        buffer = []
+        stream = Stream()
+
+        def process_stream():
+            """process buffered stream"""
+            while True:
+                content = stream.get_content()
+                if not content:
+                    continue
+                message = RPCMessage.from_str(content)
+                self._process_response_message(message)
 
         while True:
-            try:
-                message = RPCMessage.from_bytes(b"".join(buffer))
-            except ContentIncomplete:
-                pass
-            except (ContentOverflow, InvalidMessage) as err:
-                LOGGER.debug(repr(err))
-                buffer = []
-            else:
-                self._process_response_message(message)
-                buffer = []
-
             buf = stdout.read(self.BUFFER_LENGTH)
             if not buf:
                 LOGGER.debug("stdout closed")
                 return
 
-            buffer.append(buf)
+            stream.put(buf)
+            try:
+                process_stream()
+            except (EOFError, ContentIncomplete):
+                pass
+            except Exception as err:
+                LOGGER.error(err)
 
     def _listen_stderr(self):
         """listen stderr task"""
