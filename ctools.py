@@ -66,26 +66,43 @@ class CompletionList(sublime.CompletionList):
 
         for item in rpc_items:
 
-            # additional changes, ex: include library
-            changes = item.get("additionalTextEdits", [])
+            trigger = item["filterText"]
+            annotation = item["label"]
+            kind = _KIND_MAP.get(item["kind"], sublime.KIND_AMBIGUOUS)
 
-            # completion text
             text_changes = item["textEdit"]
-            # sublime text remove existing completion word
-            text_changes["range"]["end"] = text_changes["range"]["start"]
+            additional_changes = item.get("additionalTextEdits")
 
-            # include completion path ended with `"` or `>`
-            if item["kind"] == 17:
-                text_changes["newText"] = text_changes["newText"].strip('">')
+            if additional_changes:
 
-            changes.append(text_changes)
+                # sublime text remove existing completion word
+                text_changes["range"]["end"] = text_changes["range"]["start"]
 
-            yield sublime.CompletionItem.command_completion(
-                trigger=item["filterText"],
-                command="ctools_apply_document_change",
-                args={"changes": changes},
-                annotation=item["label"],
-                kind=_KIND_MAP.get(item["kind"], sublime.KIND_AMBIGUOUS),
+                # additional changes, ex: include library
+                changes = [additional_changes]
+
+                # include completion path ended with `"` or `>`
+                if item["kind"] == 17:
+                    text_changes["newText"] = text_changes["newText"].strip('">')
+
+                changes.append(text_changes)
+
+                yield sublime.CompletionItem.command_completion(
+                    trigger=trigger,
+                    command="ctools_apply_document_change",
+                    args={"changes": changes},
+                    annotation=annotation,
+                    kind=kind,
+                )
+                continue
+
+            # default
+            yield sublime.CompletionItem(
+                trigger=trigger,
+                annotation=annotation,
+                completion=text_changes["newText"],
+                completion_format=sublime.COMPLETION_FORMAT_SNIPPET,
+                kind=kind,
             )
 
     @classmethod
