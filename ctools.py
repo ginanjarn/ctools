@@ -2,7 +2,6 @@
 
 import logging
 import os
-import queue
 import threading
 import time
 
@@ -606,16 +605,16 @@ class ClangdClient(lsp.LSPClient):
         if self.transport:
             self.transport.terminate()
 
-    def handle_initialize(self, params: lsp.RPCMessage):
+    def handle_initialize(self, message: lsp.RPCMessage):
         LOGGER.info("handle_initialize")
 
-        LOGGER.debug("params: %s", params)
+        LOGGER.debug("params: %s", message)
         # FIXME: handle initialize
         # ------------------------
-        if params.error:
-            LOGGER.error(params.error)
+        if message.error:
+            LOGGER.error(message.error)
 
-        capabilities = params.result["capabilities"]
+        capabilities = message.result["capabilities"]
 
         self.completion_commit_character = capabilities["completionProvider"][
             "allCommitCharacters"
@@ -625,50 +624,51 @@ class ClangdClient(lsp.LSPClient):
         # notify if initialized
         self.transport.notify(lsp.RPCMessage.notification("initialized"))
 
-    def handle_textDocument_completion(self, params: lsp.RPCMessage):
+    def handle_textDocument_completion(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_completion")
 
-        completion_items = params.result["items"]
+        completion_items = message.result["items"]
         ACTIVE_DOCUMENT.show_completions(completion_items)
 
-    def handle_textDocument_hover(self, params: lsp.RPCMessage):
+    def handle_textDocument_hover(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_hover")
 
-        if params.error:
-            LOGGER.error(params.error)
+        if message.error:
+            LOGGER.error(message.error)
 
-        ACTIVE_DOCUMENT.show_popup(params.result)
+        ACTIVE_DOCUMENT.show_popup(message.result)
 
-    def handle_textDocument_formatting(self, params: lsp.RPCMessage):
+    def handle_textDocument_formatting(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_formatting")
 
-        changes = params.result
+        changes = message.result
         try:
             ACTIVE_DOCUMENT.apply_document_change(changes)
         except Exception as err:
             LOGGER.error(err)
 
-    def handle_textDocument_semanticTokens_full(self, params: lsp.RPCMessage):
+    def handle_textDocument_semanticTokens_full(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_semanticTokens_full")
-        LOGGER.debug(params)
+        LOGGER.debug(message)
 
-    def handle_textDocument_documentLink(self, params: lsp.RPCMessage):
+    def handle_textDocument_documentLink(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_documentLink")
-        LOGGER.debug(params)
+        LOGGER.debug(message)
 
-    def handle_textDocument_documentSymbol(self, params: lsp.RPCMessage):
+    def handle_textDocument_documentSymbol(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_documentSymbol")
-        LOGGER.debug(params)
+        LOGGER.debug(message)
 
-    def handle_textDocument_codeAction(self, params: lsp.RPCMessage):
+    def handle_textDocument_codeAction(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_codeAction")
-        LOGGER.debug(params)
-        ACTIVE_DOCUMENT.show_code_action(params.result)
+        LOGGER.debug(message)
+        ACTIVE_DOCUMENT.show_code_action(message.result)
 
-    def handle_textDocument_publishDiagnostics(self, params: Dict[str, object]):
+    def handle_textDocument_publishDiagnostics(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_publishDiagnostics")
 
-        LOGGER.debug(params)
+        LOGGER.debug(message)
+        params = message.params
         file_name = DocumentURI(params["uri"]).to_path()
         working_version = self.get_document_version(
             file_name, reset=False, increment=False
@@ -689,17 +689,13 @@ class ClangdClient(lsp.LSPClient):
 
         document.apply_diagnostics(diagnostics)
 
-    def handle_window_workDoneProgress_create(self, params):
+    def handle_window_workDoneProgress_create(self, message: lsp.RPCMessage):
         LOGGER.info("handle_window_workDoneProgress_create")
-        LOGGER.debug(params)
+        LOGGER.debug(message)
 
-    # def _textDocument_clangd_fileStatus(self, params):
-    #     LOGGER.info("_textDocument_clangd_fileStatus")
-    #     LOGGER.debug(params)
-
-    def handle_S_progress(self, params):
-        LOGGER.info("handle_S_progress")
-        LOGGER.debug(params)
+        def handle_S_progress(self, message: lsp.RPCMessage):
+            LOGGER.info("handle_S_progress")
+            LOGGER.debug(message)
 
     def _apply_edit_changes(self, edit_changes: Dict[str, dict]):
         LOGGER.info("_apply_edit_changes")
@@ -733,9 +729,10 @@ class ClangdClient(lsp.LSPClient):
 
             LOGGER.debug("finish apply to: %s", file_name)
 
-    def handle_workspace_applyEdit(self, params: Dict[str, object]):
+    def handle_workspace_applyEdit(self, message: lsp.RPCMessage):
         LOGGER.info("handle_workspace_applyEdit")
 
+        params = message.params
         try:
             changes = params["edit"]["changes"]
         except Exception as err:
@@ -746,18 +743,18 @@ class ClangdClient(lsp.LSPClient):
             except Exception as err:
                 LOGGER.error("error apply edit_changes: %s", repr(err))
 
-    def handle_textDocument_prepareRename(self, params: lsp.RPCMessage):
+    def handle_textDocument_prepareRename(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_prepareRename")
-        LOGGER.debug("params: %s", params)
+        LOGGER.debug("message: %s", message)
 
-        ACTIVE_DOCUMENT.prepare_rename(params)
+        ACTIVE_DOCUMENT.prepare_rename(message)
 
-    def handle_textDocument_rename(self, params: lsp.RPCMessage):
+    def handle_textDocument_rename(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_rename")
-        LOGGER.debug("params: %s", params)
+        LOGGER.debug("message: %s", message)
 
         try:
-            changes = params.result["changes"]
+            changes = message.result["changes"]
         except Exception as err:
             LOGGER.error(repr(err))
         else:
@@ -766,19 +763,20 @@ class ClangdClient(lsp.LSPClient):
             except Exception as err:
                 LOGGER.error("error apply edit_changes: %s", repr(err))
 
-    def handle_textDocument_definition(self, params: lsp.RPCMessage):
+    def handle_textDocument_definition(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_definition")
-        LOGGER.debug("params: %s", params)
-        ACTIVE_DOCUMENT.goto(params.result)
+        LOGGER.debug("message: %s", message)
+        ACTIVE_DOCUMENT.goto(message.result)
 
-    def handle_textDocument_declaration(self, params: lsp.RPCMessage):
+    def handle_textDocument_declaration(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_declaration")
-        LOGGER.debug("params: %s", params)
-        ACTIVE_DOCUMENT.goto(params.result)
+        LOGGER.debug("message: %s", message)
+        ACTIVE_DOCUMENT.goto(message.result)
 
-    def handle_textDocument_clangd_fileStatus(self, params: lsp.RPCMessage):
+    def handle_textDocument_clangd_fileStatus(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_clangd_fileStatus")
-        LOGGER.debug("params: %s", params)
+        LOGGER.debug("message: %s", message)
+        params = message.params
         document = Document(lsp.DocumentURI(params["uri"]).to_path())
         file_status = params["state"]
         document.set_status(f"clangd [{file_status}] ")

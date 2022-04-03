@@ -7,11 +7,11 @@ import re
 import subprocess
 import threading
 from abc import ABC, abstractmethod
-from typing import Dict, List, Callable, Any, Union
+from typing import Callable
 from urllib.request import pathname2url, url2pathname
 
 LOGGER = logging.getLogger(__name__)
-# LOGGER.setLevel(logging.DEBUG)  # module logging level
+LOGGER.setLevel(logging.DEBUG)  # module logging level
 STREAM_HANDLER = logging.StreamHandler()
 LOG_TEMPLATE = "%(levelname)s %(asctime)s %(filename)s:%(lineno)s  %(message)s"
 STREAM_HANDLER.setFormatter(logging.Formatter(LOG_TEMPLATE))
@@ -120,8 +120,21 @@ class RPCMessage(dict):
         return cls({"id": id_, "method": method, "params": params})
 
     @classmethod
+    def response(cls, id_, result=None, error=None):
+        c = cls({"id": id_})
+        if result is not None:
+            c["result"] = result
+        if error is not None:
+            c["error"] = error
+        return c
+
+    @classmethod
     def cancel_request(cls, id_):
         return cls({"id": id_})
+
+    @property
+    def method(self):
+        return self.get("method")
 
     @property
     def params(self):
@@ -232,10 +245,6 @@ class AbstractTransport(ABC):
     @abstractmethod
     def cancel_request(self, message: RPCMessage):
         """cancel request"""
-
-    @abstractmethod
-    def run_command(self, method: str, params: Dict[str, Any]):
-        """run command"""
 
     @abstractmethod
     def register_command(self, method: str, callable: Callable[[RPCMessage], None]):
@@ -1008,14 +1017,19 @@ class StandardIO(AbstractTransport):
 
     def _write(self, message: RPCMessage):
         LOGGER.info("_write to stdin")
+        LOGGER.debug(f"Send >> {message}")
 
         bmessage = message.to_bytes()
-        LOGGER.debug("write:\n%s", bmessage)
         self.server_process.stdin.write(bmessage)
         self.server_process.stdin.flush()
 
     def notify(self, message: RPCMessage):
         LOGGER.info("notify")
+
+        self._write(message)
+
+    def respond(self, message: RPCMessage):
+        LOGGER.info("respond")
 
         self._write(message)
 
@@ -1032,52 +1046,30 @@ class StandardIO(AbstractTransport):
             del self.request_map[message["id"]]
         except KeyError as err:
             LOGGER.debug("request canceled: %s", err)
-        except TypeError as err:
+        except TypeError:
             LOGGER.error(f"TypeError, {message}, {self.request_map}")
         else:
             self._write(message)
 
-    def run_command(self, method: str, params: Union[Dict[str, Any], List[Any]]):
-        LOGGER.info("run_command")
-
-        LOGGER.debug(f"method: {method}, params: {params}")
-
-        try:
-            func = self.command_map[method]
-        except KeyError:
-            LOGGER.error("method not found: '%s'", method)
-
-        else:
-            try:
-                func(params)
-            except Exception as err:
-                LOGGER.debug("run_command error: \n%s", err)
-
     def _process_response_message(self, message: RPCMessage):
-        """process server response message"""
-
-        LOGGER.debug("message: %s", message)
 
         method = message.get("method")
         message_id = message.get("id")
         if method:
-            # exec server request
-            self.run_command(method, message["params"])
-
-        elif message_id:
-            # exec response map to request id
-            try:
-                method = self.request_map.pop(message_id)
-
-            except KeyError as err:
-                LOGGER.error("request id not found: '%s'", err)
-                LOGGER.debug("all request: %s", self.request_map)
-
-            else:
-                self.run_command(method, message)
-
+            # exec server command
+            func = self.command_map[method]
+        elif message_id is not None:
+            # exec request command
+            method = self.request_map.pop(message_id)
+            func = self.command_map[method]
         else:
-            LOGGER.debug("invalid message: %s", message)
+            raise InvalidMessage
+        try:
+            func(message)
+        except Exception as err:
+            raise Exception(
+                f"execute message error, method: {method}, params: {message}"
+            ) from err
 
     def _listen_stdout(self):
         """listen stdout task"""
@@ -1092,7 +1084,11 @@ class StandardIO(AbstractTransport):
                 if not content:
                     continue
                 message = RPCMessage.from_str(content)
-                self._process_response_message(message)
+                LOGGER.debug(f"Received << {message}")
+                try:
+                    self._process_response_message(message)
+                except Exception:
+                    LOGGER.error("error process message", exc_info=True)
 
         while True:
             buf = stdout.read(self.BUFFER_LENGTH)
