@@ -5,7 +5,7 @@ import os
 import threading
 import time
 
-from typing import List, Iterable, Union, Dict, Iterator
+from typing import List, Union, Dict, Iterator, Any
 
 import sublime
 import sublime_plugin
@@ -72,13 +72,13 @@ class CompletionList(sublime.CompletionList):
             text_changes = item["textEdit"]
             additional_changes = item.get("additionalTextEdits")
 
-            if additional_changes:
+            if additional_changes is not None:
 
                 # sublime text remove existing completion word
                 text_changes["range"]["end"] = text_changes["range"]["start"]
 
                 # additional changes, ex: include library
-                changes = [additional_changes]
+                changes: List[Dict[str, Any]] = additional_changes
 
                 # include completion path ended with `"` or `>`
                 if item["kind"] == 17:
@@ -613,6 +613,7 @@ class ClangdClient(lsp.LSPClient):
         # ------------------------
         if message.error:
             LOGGER.error(message.error)
+            return
 
         capabilities = message.result["capabilities"]
 
@@ -627,6 +628,10 @@ class ClangdClient(lsp.LSPClient):
     def handle_textDocument_completion(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_completion")
 
+        if message.error:
+            LOGGER.error(message.error)
+            return
+
         completion_items = message.result["items"]
         ACTIVE_DOCUMENT.show_completions(completion_items)
 
@@ -635,11 +640,16 @@ class ClangdClient(lsp.LSPClient):
 
         if message.error:
             LOGGER.error(message.error)
+            return
 
         ACTIVE_DOCUMENT.show_popup(message.result)
 
     def handle_textDocument_formatting(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_formatting")
+
+        if message.error:
+            LOGGER.error(message.error)
+            return
 
         changes = message.result
         try:
@@ -662,21 +672,35 @@ class ClangdClient(lsp.LSPClient):
     def handle_textDocument_codeAction(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_codeAction")
         LOGGER.debug(message)
+
+        if message.error:
+            LOGGER.error(message.error)
+            return
+
         ACTIVE_DOCUMENT.show_code_action(message.result)
 
     def handle_textDocument_publishDiagnostics(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_publishDiagnostics")
 
         LOGGER.debug(message)
+        if message.error:
+            LOGGER.error(message.error)
+            return
+
         params = message.params
         file_name = DocumentURI(params["uri"]).to_path()
         working_version = self.get_document_version(
             file_name, reset=False, increment=False
         )
-        diagnostic_version = params["version"]
-        if working_version != diagnostic_version:
+        document_version = params.get("version", -1)
+        if document_version < 0:
+            LOGGER.debug(f"{file_name} not opened")
+            return
+
+        if working_version != document_version:
             LOGGER.debug(
-                f"cancel publish diagnostic for invalid version, current: {working_version}, expected: {diagnostic_version}"
+                "incompatible version, "
+                f"current: {working_version} != expected: {document_version}"
             )
             return
 
@@ -693,9 +717,9 @@ class ClangdClient(lsp.LSPClient):
         LOGGER.info("handle_window_workDoneProgress_create")
         LOGGER.debug(message)
 
-        def handle_S_progress(self, message: lsp.RPCMessage):
-            LOGGER.info("handle_S_progress")
-            LOGGER.debug(message)
+    def handle_S_progress(self, message: lsp.RPCMessage):
+        LOGGER.info("handle_S_progress")
+        LOGGER.debug(message)
 
     def _apply_edit_changes(self, edit_changes: Dict[str, dict]):
         LOGGER.info("_apply_edit_changes")

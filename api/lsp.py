@@ -783,6 +783,7 @@ class LSPClient:
 
         params = {"textDocument": {"uri": DocumentURI.from_path(file_name)}}
         self.transport.notify(RPCMessage.notification("textDocument/didClose", params))
+        self.active_document = ""
 
     def textDocument_didSave(self, file_name: str):
         LOGGER.info("textDocument_didSave")
