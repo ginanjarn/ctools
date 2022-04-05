@@ -432,7 +432,7 @@ class LSPClient:
         self.transport.terminate()
 
     def cancelRequest(self):
-        self.transport.cancel_request(RPCMessage.cancel_request(self.request_id))
+        self.transport.cancel_request()
 
     def initialize(self, project_path: str):
         """initialize server"""
@@ -1082,16 +1082,12 @@ class StandardIO(AbstractTransport):
         self.request_map[message["id"]] = message["method"]
         self.send_message(message)
 
-    def cancel_request(self, message: RPCMessage):
+    def cancel_request(self):
         LOGGER.info("cancel request")
 
-        try:
-            del self.request_map[message["id"]]
-        except KeyError as err:
-            LOGGER.debug("request canceled: %s", err)
-        except TypeError:
-            LOGGER.error(f"TypeError, {message}, {self.request_map}")
-        else:
+        for key, _ in self.request_map.items():
+            request_id = self.request_map.pop(key)
+            message = RPCMessage.cancel_request(id_=request_id)
             self.send_message(message)
 
     def _process_response_message(self, message: RPCMessage):
