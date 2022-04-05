@@ -7,6 +7,7 @@ import re
 import subprocess
 import threading
 from abc import ABC, abstractmethod
+from queue import Queue
 from typing import Callable
 from urllib.request import pathname2url, url2pathname
 
@@ -130,7 +131,7 @@ class RPCMessage(dict):
 
     @classmethod
     def cancel_request(cls, id_):
-        return cls({"id": id_})
+        return cls({"method": "$/cancelRequest", "params": {"id": id_}})
 
     @property
     def method(self):
@@ -321,6 +322,9 @@ class LSPClient:
     def handle_workspace_applyEdit(self, params: RPCMessage):
         """handle workspace apply edit"""
 
+    def handle_client_registerCapability(self, params: RPCMessage):
+        """handle client registerCapability"""
+
     def handle_textDocument_documentLink(self, params: RPCMessage):
         """handle document link"""
 
@@ -336,8 +340,17 @@ class LSPClient:
     def handle_textDocument_publishDiagnostics(self, params: RPCMessage):
         """handle publish diagnostic"""
 
+    def handle_workspace_configuration(self, params):
+        """handle workspace configuration"""
+
     def handle_window_workDoneProgress_create(self, params):
         """handle work progress done create"""
+
+    def handle_window_showMessage(self, message: RPCMessage):
+        """handle show message"""
+
+    def handle_window_logMessage(self, message: RPCMessage):
+        """handle log message"""
 
     def handle_textDocument_prepareRename(self, params: RPCMessage):
         """handle document prepare rename"""
@@ -358,7 +371,16 @@ class LSPClient:
             self.handle_textDocument_publishDiagnostics,
         )
         self.transport.register_command(
+            "workspace/configuration", self.handle_workspace_configuration
+        )
+        self.transport.register_command(
             "window/workDoneProgress/create", self.handle_window_workDoneProgress_create
+        )
+        self.transport.register_command(
+            "window/showMessage", self.handle_window_showMessage
+        )
+        self.transport.register_command(
+            "window/logMessage", self.handle_window_logMessage
         )
         self.transport.register_command(
             "textDocument/documentLink", self.handle_textDocument_documentLink
@@ -389,6 +411,9 @@ class LSPClient:
         )
         self.transport.register_command(
             "workspace/applyEdit", self.handle_workspace_applyEdit
+        )
+        self.transport.register_command(
+            "client/registerCapability", self.handle_client_registerCapability
         )
         self.transport.register_command(
             "textDocument/prepareRename", self.handle_textDocument_prepareRename
@@ -990,6 +1015,9 @@ class StandardIO(AbstractTransport):
         # request
         self.request_map = {}
 
+        self.message_queue = Queue()
+        self.send_message_thread = threading.Thread(target=self.send_message_task)
+
     def register_command(self, method: str, handler: Callable[[RPCMessage], None]):
         LOGGER.info("register_command")
         self.command_map[method] = handler
@@ -1024,21 +1052,35 @@ class StandardIO(AbstractTransport):
         self.server_process.stdin.write(bmessage)
         self.server_process.stdin.flush()
 
+    def send_message(self, message: RPCMessage):
+        if message.method in {"initialize", "initialized"}:
+            self._write(message)
+            if message.method == "initialized":
+                self.send_message_thread.start()
+        else:
+            self.message_queue.put(message)
+
+    def send_message_task(self):
+        while True:
+            message = self.message_queue.get()
+            LOGGER.debug(f"Queued message >> {message}")
+            self._write(message)
+
     def notify(self, message: RPCMessage):
         LOGGER.info("notify")
 
-        self._write(message)
+        self.send_message(message)
 
     def respond(self, message: RPCMessage):
         LOGGER.info("respond")
 
-        self._write(message)
+        self.send_message(message)
 
     def request(self, message: RPCMessage):
         LOGGER.info("request")
 
         self.request_map[message["id"]] = message["method"]
-        self._write(message)
+        self.send_message(message)
 
     def cancel_request(self, message: RPCMessage):
         LOGGER.info("cancel request")
@@ -1050,7 +1092,7 @@ class StandardIO(AbstractTransport):
         except TypeError:
             LOGGER.error(f"TypeError, {message}, {self.request_map}")
         else:
-            self._write(message)
+            self.send_message(message)
 
     def _process_response_message(self, message: RPCMessage):
 
@@ -1088,6 +1130,9 @@ class StandardIO(AbstractTransport):
                 LOGGER.debug(f"Received << {message}")
                 try:
                     self._process_response_message(message)
+                except KeyError as err:
+                    message_id = message["id"]
+                    LOGGER.debug(f"{message_id} in {self.request_map}")
                 except Exception:
                     LOGGER.error("error process message", exc_info=True)
 

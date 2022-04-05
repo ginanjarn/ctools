@@ -623,7 +623,7 @@ class ClangdClient(lsp.LSPClient):
         self.is_initialized = True
 
         # notify if initialized
-        self.transport.notify(lsp.RPCMessage.notification("initialized"))
+        self.transport.notify(lsp.RPCMessage.notification("initialized", {}))
 
     def handle_textDocument_completion(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_completion")
