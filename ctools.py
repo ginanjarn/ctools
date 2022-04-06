@@ -382,7 +382,12 @@ class ActiveDocument:
         self._completion_result = None
         return result
 
-    def show_completions(self, completions: List[dict]):
+    def show_completions(self, completions):
+
+        if completions is None:
+            return
+
+        completions = completions["items"]
         completion_list = CompletionList.from_rpc(completions)
         self._completion_result = completion_list
 
@@ -412,12 +417,18 @@ class ActiveDocument:
             elif pre_tag and line.endswith("</pre>"):
                 pre_tag = False
 
+            line = line.replace("<pre>", "<div class='code_block'>")
+            line = line.replace("</pre>", "</div>")
             line = line.replace("  ", "&nbsp;&nbsp;")
             line = f"{line}<br />" if pre_tag else line
 
             yield line
 
     def show_popup(self, documentation):
+
+        if documentation is None:
+            return
+
         contents = documentation["contents"]["value"]
         kind = documentation["contents"]["kind"]
         start = documentation["range"]["start"]
@@ -435,11 +446,18 @@ class ActiveDocument:
             background-color: color(var(--background) alpha(0.8));
             font-family: ui-monospace,SFMono-Regular,SF Mono,Menlo,Consolas,Liberation Mono,monospace;
         }
+        .code_block {
+            background-color: color(var(--background) alpha(0.8));
+        }
         """
         contents = "\n".join(self.adapt_minihtml(contents))
-        contents = f"<style>{style}</style>{contents}"
+        contents = f"<style>{style}</style>\n{contents}"
+        LOGGER.debug(contents)
         self.view.show_popup(
-            contents, flags=sublime.HIDE_ON_MOUSE_MOVE_AWAY, location=location
+            contents,
+            flags=sublime.HIDE_ON_MOUSE_MOVE_AWAY,
+            location=location,
+            max_width=1024,
         )
 
     def show_code_action(self, action_params: List[dict]):
@@ -643,8 +661,7 @@ class ClangdClient(lsp.LSPClient):
             LOGGER.error(message.error)
             return
 
-        completion_items = message.result["items"]
-        ACTIVE_DOCUMENT.show_completions(completion_items)
+        ACTIVE_DOCUMENT.show_completions(message.result)
 
     def handle_textDocument_hover(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_hover")
