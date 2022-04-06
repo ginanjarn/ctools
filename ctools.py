@@ -412,7 +412,7 @@ class ActiveDocument:
             elif pre_tag and line.endswith("</pre>"):
                 pre_tag = False
 
-            line = line.replace("  ", "&nbsp;&nbsp")
+            line = line.replace("  ", "&nbsp;&nbsp;")
             line = f"{line}<br />" if pre_tag else line
 
             yield line
@@ -426,7 +426,18 @@ class ActiveDocument:
         if kind == "markdown":
             contents = mistune.markdown(contents)
 
+        style = """
+        body {
+            font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif,"Apple Color Emoji","Segoe UI Emoji";
+            line-height: 1.5;
+        }
+        code {
+            background-color: color(var(--background) alpha(0.8));
+            font-family: ui-monospace,SFMono-Regular,SF Mono,Menlo,Consolas,Liberation Mono,monospace;
+        }
+        """
         contents = "\n".join(self.adapt_minihtml(contents))
+        contents = f"<style>{style}</style>{contents}"
         self.view.show_popup(
             contents, flags=sublime.HIDE_ON_MOUSE_MOVE_AWAY, location=location
         )

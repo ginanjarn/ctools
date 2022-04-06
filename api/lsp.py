@@ -1085,10 +1085,11 @@ class StandardIO(AbstractTransport):
     def cancel_request(self):
         LOGGER.info("cancel request")
 
-        for key, _ in self.request_map.items():
-            request_id = self.request_map.pop(key)
+        for request_id, _ in self.request_map.items():
             message = RPCMessage.cancel_request(id_=request_id)
             self.send_message(message)
+
+        self.request_map = {}
 
     def _process_response_message(self, message: RPCMessage):
 
