@@ -12,7 +12,7 @@ from typing import Callable
 from urllib.request import pathname2url, url2pathname
 
 LOGGER = logging.getLogger(__name__)
-LOGGER.setLevel(logging.DEBUG)  # module logging level
+# LOGGER.setLevel(logging.DEBUG)  # module logging level
 STREAM_HANDLER = logging.StreamHandler()
 LOG_TEMPLATE = "%(levelname)s %(asctime)s %(filename)s:%(lineno)s  %(message)s"
 STREAM_HANDLER.setFormatter(logging.Formatter(LOG_TEMPLATE))
