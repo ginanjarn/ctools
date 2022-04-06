@@ -70,26 +70,15 @@ class CompletionList(sublime.CompletionList):
             kind = _KIND_MAP.get(item["kind"], sublime.KIND_AMBIGUOUS)
 
             text_changes = item["textEdit"]
-            additional_changes = item.get("additionalTextEdits")
-
-            if additional_changes is not None:
-
-                # sublime text remove existing completion word
-                text_changes["range"]["end"] = text_changes["range"]["start"]
-
-                # additional changes, ex: include library
-                changes: List[Dict[str, Any]] = additional_changes
-
-                # include completion path ended with `"` or `>`
-                if item["kind"] == 17:
-                    text_changes["newText"] = text_changes["newText"].strip('">')
-
-                changes.append(text_changes)
-
+            additional_text_edits = item.get("additionalTextEdits")
+            if additional_text_edits is not None:
                 yield sublime.CompletionItem.command_completion(
                     trigger=trigger,
-                    command="ctools_apply_document_change",
-                    args={"changes": changes},
+                    command="ctools_apply_completion",
+                    args={
+                        "completion": text_changes,
+                        "additional_changes": additional_text_edits,
+                    },
                     annotation=annotation,
                     kind=kind,
                 )
@@ -117,6 +106,15 @@ class CompletionList(sublime.CompletionList):
             flags=sublime.INHIBIT_WORD_COMPLETIONS
             | sublime.INHIBIT_EXPLICIT_COMPLETIONS,
         )
+
+
+class CtoolsApplyCompletionCommand(sublime_plugin.TextCommand):
+    def run(self, edit, completion, additional_changes):
+        # clangd insert completion location calculated with additional changes
+        completion["range"]["end"] = completion["range"]["start"]
+        changes = [completion]
+        changes.extend(additional_changes)
+        self.view.run_command("ctools_apply_document_change", {"changes": changes})
 
 
 class DiagnosticItem:
