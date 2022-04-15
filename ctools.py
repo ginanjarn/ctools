@@ -618,9 +618,6 @@ class ClangdClient(lsp.LSPClient):
         else:
             self.server_running = True
 
-    def server_running(self):
-        return bool(self.transport)
-
     def _hide_completion(self, character: str):
         LOGGER.info("_hide_completion")
 
@@ -629,8 +626,8 @@ class ClangdClient(lsp.LSPClient):
 
     def shutdown_server(self):
         LOGGER.debug("shutdown_server")
-        if self.transport:
-            self.transport.terminate()
+        if self.server_running:
+            self.reset_session()
 
     def handle_initialize(self, message: lsp.RPCMessage):
         LOGGER.info("handle_initialize")
@@ -1180,3 +1177,14 @@ class CtoolsGotoDeclarationCommand(sublime_plugin.TextCommand):
 
     def is_visible(self):
         return valid_source(self.view) and CLANGD_CLIENT.is_initialized
+
+
+class CtoolsRestartServerCommand(sublime_plugin.TextCommand):
+    def run(self, edit, location=None):
+        LOGGER.info("CtoolsRestartServerCommand")
+
+        if CLANGD_CLIENT.server_running:
+            CLANGD_CLIENT.shutdown_server()
+
+    def is_visible(self):
+        return CLANGD_CLIENT.server_running

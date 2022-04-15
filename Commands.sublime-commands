@@ -4,4 +4,5 @@
 	{ "caption": "CTools: Rename", "command": "ctools_prepare_rename" },
 	{ "caption": "CTools: Go To Definition", "command": "ctools_goto_definition" },
 	{ "caption": "CTools: Go To Declaration", "command": "ctools_goto_declaration" },
+	{ "caption": "CTools: Restart Server", "command": "ctools_restart_server" },
 ]
