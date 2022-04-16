@@ -85,11 +85,16 @@ class CompletionList(sublime.CompletionList):
                 continue
 
             # default
+            completion_format = (
+                sublime.COMPLETION_FORMAT_SNIPPET
+                if "$" in text_changes["newText"]
+                else sublime.COMPLETION_FORMAT_TEXT
+            )
             yield sublime.CompletionItem(
                 trigger=trigger,
                 annotation=annotation,
                 completion=text_changes["newText"],
-                completion_format=sublime.COMPLETION_FORMAT_SNIPPET,
+                completion_format=completion_format,
                 kind=kind,
             )
 
