@@ -608,6 +608,9 @@ class ClangdClient(lsp.LSPClient):
     def run_server(self, clangd="clangd", *args):
         commands = [clangd]
         commands.extend(args)
+
+        sublime.status_message("starting 'clangd'")
+
         try:
             self.transport = StandardIO(commands)
             self._register_commands()
@@ -633,6 +636,8 @@ class ClangdClient(lsp.LSPClient):
         LOGGER.debug("shutdown_server")
         if self.server_running:
             self.reset_session()
+
+            sublime.status_message("'clangd' terminated")
 
     def handle_initialize(self, message: lsp.RPCMessage):
         LOGGER.info("handle_initialize")
@@ -831,7 +836,7 @@ class ClangdClient(lsp.LSPClient):
         params = message.params
         document = Document(lsp.DocumentURI(params["uri"]).to_path())
         file_status = params["state"]
-        document.set_status(f"clangd [{file_status}] ")
+        sublime.status_message(f"clangd: {file_status}")
 
 
 CLANGD_CLIENT = ClangdClient()
