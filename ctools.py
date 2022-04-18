@@ -387,9 +387,6 @@ class ActiveDocument:
 
     def show_completions(self, completions):
 
-        if completions is None:
-            return
-
         completions = completions["items"]
         completion_list = CompletionList.from_rpc(completions)
         self._completion_result = completion_list
@@ -428,9 +425,6 @@ class ActiveDocument:
             yield line
 
     def show_popup(self, documentation):
-
-        if documentation is None:
-            return
 
         contents = documentation["contents"]["value"]
         kind = documentation["contents"]["kind"]
@@ -699,9 +693,8 @@ class ClangdClient(lsp.LSPClient):
         if message.result is None:
             return
 
-        changes = message.result
         try:
-            ACTIVE_DOCUMENT.apply_document_change(changes)
+            ACTIVE_DOCUMENT.apply_document_change(message.result)
         except Exception as err:
             LOGGER.error(err)
 
