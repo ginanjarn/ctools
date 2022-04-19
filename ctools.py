@@ -104,12 +104,18 @@ class CompletionList(sublime.CompletionList):
 
         LOGGER.debug("completion_list: %s", completion_items)
 
+        def filter_by_score(item):
+            return item.get("score", 0)
+
+        completion_items.sort(key=filter_by_score, reverse=True)
+
         return cls(
             completions=list(cls.build_completion(completion_items))
             if completion_items
             else [],
             flags=sublime.INHIBIT_WORD_COMPLETIONS
-            | sublime.INHIBIT_EXPLICIT_COMPLETIONS,
+            | sublime.INHIBIT_EXPLICIT_COMPLETIONS
+            | sublime.INHIBIT_REORDER,
         )
 
 
