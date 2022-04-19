@@ -488,8 +488,8 @@ class ActiveDocument:
         self.view.run_command("ctools_apply_document_change", {"changes": changes})
 
     def prepare_rename(self, params):
-        start = params.result["start"]
-        end = params.result["end"]
+        start = params["start"]
+        end = params["end"]
         placeholder = self.view.substr(
             sublime.Region(
                 self.view.text_point(start["line"], start["character"]),
@@ -821,7 +821,14 @@ class ClangdClient(lsp.LSPClient):
         LOGGER.info("handle_textDocument_prepareRename")
         LOGGER.debug("message: %s", message)
 
-        ACTIVE_DOCUMENT.prepare_rename(message)
+        if message.error:
+            LOGGER.error(message.error)
+            return
+
+        if message.result is None:
+            return
+
+        ACTIVE_DOCUMENT.prepare_rename(message.result)
 
     def handle_textDocument_rename(self, message: lsp.RPCMessage):
         LOGGER.info("handle_textDocument_rename")
