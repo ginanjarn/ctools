@@ -60,43 +60,40 @@ class CompletionList(sublime.CompletionList):
     """CompletionList"""
 
     @staticmethod
-    def build_completion(rpc_items: Dict[str, object]):
+    def build_completion(item: Dict[str, object]):
         """build completion item"""
 
-        for item in rpc_items:
+        trigger = item["filterText"]
+        annotation = item["label"]
+        kind = _KIND_MAP.get(item["kind"], sublime.KIND_AMBIGUOUS)
 
-            trigger = item["filterText"]
-            annotation = item["label"]
-            kind = _KIND_MAP.get(item["kind"], sublime.KIND_AMBIGUOUS)
-
-            text_changes = item["textEdit"]
-            additional_text_edits = item.get("additionalTextEdits")
-            if additional_text_edits is not None:
-                yield sublime.CompletionItem.command_completion(
-                    trigger=trigger,
-                    command="ctools_apply_completion",
-                    args={
-                        "completion": text_changes,
-                        "additional_changes": additional_text_edits,
-                    },
-                    annotation=annotation,
-                    kind=kind,
-                )
-                continue
-
-            # default
-            completion_format = (
-                sublime.COMPLETION_FORMAT_SNIPPET
-                if "$" in text_changes["newText"]
-                else sublime.COMPLETION_FORMAT_TEXT
-            )
-            yield sublime.CompletionItem(
+        text_changes = item["textEdit"]
+        additional_text_edits = item.get("additionalTextEdits")
+        if additional_text_edits is not None:
+            return sublime.CompletionItem.command_completion(
                 trigger=trigger,
+                command="ctools_apply_completion",
+                args={
+                    "completion": text_changes,
+                    "additional_changes": additional_text_edits,
+                },
                 annotation=annotation,
-                completion=text_changes["newText"],
-                completion_format=completion_format,
                 kind=kind,
             )
+
+        # default
+        completion_format = (
+            sublime.COMPLETION_FORMAT_SNIPPET
+            if "$" in text_changes["newText"]
+            else sublime.COMPLETION_FORMAT_TEXT
+        )
+        return sublime.CompletionItem(
+            trigger=trigger,
+            annotation=annotation,
+            completion=text_changes["newText"],
+            completion_format=completion_format,
+            kind=kind,
+        )
 
     @classmethod
     def from_rpc(cls, completion_items: List[dict]):
@@ -108,11 +105,12 @@ class CompletionList(sublime.CompletionList):
             return item.get("score", 0)
 
         completion_items.sort(key=filter_by_score, reverse=True)
+        completions = [
+            cls.build_completion(completion) for completion in completion_items
+        ]
 
         return cls(
-            completions=list(cls.build_completion(completion_items))
-            if completion_items
-            else [],
+            completions=completions if completion_items else [],
             flags=sublime.INHIBIT_WORD_COMPLETIONS
             | sublime.INHIBIT_EXPLICIT_COMPLETIONS
             | sublime.INHIBIT_REORDER,
@@ -1061,9 +1059,12 @@ class EventListener(sublime_plugin.EventListener):
 
 
 class TextChangeListener(sublime_plugin.TextChangeListener):
-    def on_text_changed_async(self, changes: List[sublime.TextChange]):
+    def on_text_changed(self, changes: List[sublime.TextChange]):
 
         view = self.buffer.primary_view()
+
+        if view.file_name() is None:
+            return
 
         if not (valid_source(view) and CLANGD_CLIENT.is_initialized):
             return
