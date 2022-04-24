@@ -5,6 +5,7 @@ import os
 import threading
 import time
 
+from collections import OrderedDict
 from typing import List, Union, Dict, Iterator
 
 import sublime
@@ -488,6 +489,44 @@ class ActiveDocument:
 
         self.view.run_command("ctools_apply_document_change", {"changes": changes})
 
+    def apply_edit_changes(self, edit_changes: Dict[str, dict]):
+        LOGGER.info("apply_edit_changes")
+
+        if not edit_changes:
+            LOGGER.debug("nothing changed")
+            return
+
+        # order to change active document at the end
+        active_document_uri = DocumentURI.from_path(self.view.file_name())
+        edit_changes = OrderedDict(edit_changes)
+        edit_changes.move_to_end(active_document_uri)
+
+        for document_uri, text_changes in edit_changes.items():
+            file_name = DocumentURI(document_uri).to_path()
+            LOGGER.debug("try apply changes to %s", file_name)
+
+            while True:
+                if DOCUMENT_CHANGE_SYNC.busy:
+                    LOGGER.debug("busy")
+                    time.sleep(0.5)
+                    continue
+                break
+
+            LOGGER.debug("apply changes to: %s", file_name)
+            DOCUMENT_CHANGE_SYNC.set_busy()
+            document = Document(file_name, force_open=True)
+
+            try:
+                document.apply_document_change(text_changes)
+
+            except Exception as err:
+                LOGGER.error(err)
+
+            finally:
+                DOCUMENT_CHANGE_SYNC.set_finished()
+
+            LOGGER.debug("finish apply to: %s", file_name)
+
     def prepare_rename(self, params):
         start = params["start"]
         end = params["end"]
@@ -772,38 +811,6 @@ class ClangdClient(lsp.LSPClient):
         LOGGER.info("handle_S_progress")
         LOGGER.debug(message)
 
-    def _apply_edit_changes(self, edit_changes: Dict[str, dict]):
-        LOGGER.info("_apply_edit_changes")
-
-        if not edit_changes:
-            LOGGER.debug("nothing changed")
-            return
-
-        for file_name, text_changes in edit_changes.items():
-            LOGGER.debug("try apply changes to %s", file_name)
-
-            while True:
-                if DOCUMENT_CHANGE_SYNC.busy:
-                    LOGGER.debug("busy")
-                    time.sleep(0.5)
-                    continue
-                break
-
-            LOGGER.debug("apply changes to: %s", file_name)
-            DOCUMENT_CHANGE_SYNC.set_busy()
-            document = Document(DocumentURI(file_name).to_path(), force_open=True)
-
-            try:
-                document.apply_document_change(text_changes)
-
-            except Exception as err:
-                LOGGER.error(err)
-
-            finally:
-                DOCUMENT_CHANGE_SYNC.set_finished()
-
-            LOGGER.debug("finish apply to: %s", file_name)
-
     def handle_workspace_applyEdit(self, message: lsp.RPCMessage):
         LOGGER.info("handle_workspace_applyEdit")
 
@@ -814,7 +821,7 @@ class ClangdClient(lsp.LSPClient):
             LOGGER.error(repr(err))
         else:
             try:
-                self._apply_edit_changes(changes)
+                ACTIVE_DOCUMENT.apply_edit_changes(changes)
             except Exception as err:
                 LOGGER.error("error apply edit_changes: %s", repr(err))
 
@@ -847,7 +854,7 @@ class ClangdClient(lsp.LSPClient):
             LOGGER.error(repr(err))
         else:
             try:
-                self._apply_edit_changes(changes)
+                ACTIVE_DOCUMENT.apply_edit_changes(changes)
             except Exception as err:
                 LOGGER.error("error apply edit_changes: %s", repr(err))
 
