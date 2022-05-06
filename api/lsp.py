@@ -280,6 +280,11 @@ class LSPClient:
         self.document_version_map = {}
 
     def reset_session(self):
+
+        # terminate server
+        if self.transport:
+            self.transport.terminate()
+
         self.transport: AbstractTransport = None
 
         # server status
@@ -1194,12 +1199,5 @@ class StandardIO(AbstractTransport):
 
     def terminate(self):
         """terminate process"""
-
         LOGGER.info("terminate")
-
-        self.server_process.kill()
-        self.stdout_thread.join()
-        self.stderr_thread.join()
-
-    def __del__(self):
-        self.terminate()
+        self.server_process.terminate()
