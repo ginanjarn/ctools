@@ -64,11 +64,18 @@ class CompletionList(sublime.CompletionList):
     def build_completion(item: Dict[str, object]):
         """build completion item"""
 
-        trigger = item["filterText"]
-        annotation = item["label"]
-        kind = _KIND_MAP.get(item["kind"], sublime.KIND_AMBIGUOUS)
+        try:
+            trigger = item["filterText"]
+            annotation = item["label"]
+            kind = _KIND_MAP.get(item["kind"], sublime.KIND_AMBIGUOUS)
+            text_changes = item["textEdit"]
 
-        text_changes = item["textEdit"]
+        except Exception as err:
+            raise ValueError(f"error build completion from {item}") from err
+
+        # remove snippets
+        text_changes["newText"] = trigger
+
         additional_text_edits = item.get("additionalTextEdits")
         if additional_text_edits is not None:
             return sublime.CompletionItem.command_completion(
@@ -83,16 +90,10 @@ class CompletionList(sublime.CompletionList):
             )
 
         # default
-        completion_format = (
-            sublime.COMPLETION_FORMAT_SNIPPET
-            if "$" in text_changes["newText"]
-            else sublime.COMPLETION_FORMAT_TEXT
-        )
         return sublime.CompletionItem(
             trigger=trigger,
             annotation=annotation,
             completion=text_changes["newText"],
-            completion_format=completion_format,
             kind=kind,
         )
 
@@ -942,8 +943,13 @@ class EventListener(sublime_plugin.EventListener):
         self, view: sublime.View, prefix: str, locations: List[int]
     ) -> Union[CompletionList, None]:
 
-        if not (valid_source(view) and valid_identifier(view, locations[0])):
+        if not valid_source(view):
             return None
+
+        if not valid_identifier(view, locations[0]):
+            return CompletionList(
+                completions=[], flags=sublime.INHIBIT_EXPLICIT_COMPLETIONS
+            )
 
         completions = ACTIVE_DOCUMENT.get_completion_result()
         if completions:
