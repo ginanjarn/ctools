@@ -360,6 +360,37 @@ class CtoolsApplyDocumentChangeCommand(sublime_plugin.TextCommand):
         DOCUMENT_CHANGE_SYNC.set_finished()
 
 
+class WindowProgress:
+    """window progress"""
+
+    def __init__(self):
+        self.status_key = "GOTOOLS_STATUS"
+        self.busy = False
+
+    def progress_task(self, title, message):
+        view = sublime.active_window().active_view()
+        while True:
+            for spin_char in "◓◑◒◐":
+                if not self.busy:
+                    return
+                view.set_status(self.status_key, f"{spin_char} {title}: {message}")
+                time.sleep(0.1)
+
+    def start(self, title: str, message: str, /):
+        self.busy = True
+        thread = threading.Thread(target=self.progress_task, args=(title, message))
+        thread.start()
+
+    def finish(self):
+        self.busy = False
+        window: sublime.Window = sublime.active_window()
+        for view in window.views():
+            view.erase_status(self.status_key)
+
+
+WINDOW_PROGRESS = WindowProgress()
+
+
 class ActiveDocument:
     """commands to active view"""
 
@@ -879,8 +910,11 @@ class ClangdClient(lsp.LSPClient):
         LOGGER.info("handle_textDocument_clangd_fileStatus")
         LOGGER.debug("message: %s", message)
         params = message.params
-        file_status = params["state"]
-        sublime.status_message(f"clangd: {file_status}")
+
+        if params["state"] == "idle":
+            WINDOW_PROGRESS.finish()
+        else:
+            WINDOW_PROGRESS.start("clangd", params["state"])
 
 
 CLANGD_CLIENT = ClangdClient()
