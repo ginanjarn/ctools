@@ -1068,6 +1068,10 @@ class EventListener(sublime_plugin.EventListener):
             # LOGGER.debug("currently only support HOVER_TEXT")
             return
 
+        text: str = view.substr(view.word(point))
+        if not text.isidentifier():
+            return
+
         if point == view.size():
             return
 
