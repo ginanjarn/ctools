@@ -934,14 +934,16 @@ class LSPClient:
         start_col: int,
         end_line: int,
         end_col: int,
+        diagnostics=None,
     ):
         LOGGER.info("textDocument_codeAction")
 
         if not self.server_running:
             raise ServerOffline
 
+        diagnostics = [] if not diagnostics else diagnostics
         params = {
-            "context": {"diagnostics": []},
+            "context": {"diagnostics": diagnostics},
             "range": {
                 "end": {"character": end_col, "line": end_line},
                 "start": {"character": start_col, "line": start_line},

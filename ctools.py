@@ -148,6 +148,33 @@ class DiagnosticItem:
         )
 
 
+class DiagnosticCache:
+    def __init__(self):
+        self.diagnostics = []
+
+    def set(self, diagnostics: Iterator[Dict[str, object]]):
+        self.diagnostics = diagnostics
+
+    def get_diagnostic_at(
+        self, view: sublime.View, cursor: sublime.Region, /
+    ) -> Dict[str, object]:
+
+        for diagnostic in self.diagnostics:
+            range_ = diagnostic["range"]
+            start = view.text_point(
+                range_["start"]["line"], range_["start"]["character"]
+            )
+            end = view.text_point(range_["end"]["line"], range_["end"]["character"])
+
+            # check if cursor in diagnostic range
+            region = sublime.Region(start, end)
+            if region.contains(cursor) or cursor.contains(region):
+                yield diagnostic
+
+
+DIAGNOSTIC_CACHE = DiagnosticCache()
+
+
 class Diagnostics:
     """Diagnostic hold diagnostic data at view"""
 
@@ -199,6 +226,8 @@ class Diagnostics:
         warning_region = []
         information_region = []
         hint_region = []
+
+        DIAGNOSTIC_CACHE.set(diagnostics)
 
         diagnostic_items = [
             DiagnosticItem.from_rpc(self.view, diagnostic=diagnostic)
@@ -502,12 +531,20 @@ class ActiveDocument:
     def show_code_action(self, action_params: List[dict]):
         def on_done(index=-1):
             if index > -1:
-                self.view.run_command(
-                    "ctools_workspace_exec_command",
-                    {"params": action_params[index]["command"]},
-                )
+                edit = action_params[index].get("edit")
+                if edit:
+                    self.apply_edit_changes(edit["changes"])
 
-        items = [item["title"] for item in action_params]
+                command = action_params[index].get("command")
+                if command:
+                    self.view.run_command(
+                        "ctools_workspace_exec_command",
+                        {"params": action_params[index]["command"]},
+                    )
+
+        items = [
+            "%s: %s" % (item["kind"].title(), item["title"]) for item in action_params
+        ]
         self.window.show_quick_panel(items, on_done)
 
     def apply_document_change(self, changes: List[dict]):
@@ -1018,7 +1055,7 @@ class EventListener(sublime_plugin.EventListener):
             sublime.status_message(f"run server error: {err}")
 
         else:
-            sublime.status_message("'gopls' is running")
+            sublime.status_message("'clangd' is running")
             CLANGD_CLIENT.initialize(project_path)
 
     def on_query_completions(
@@ -1222,9 +1259,15 @@ class CtoolsCodeActionCommand(sublime_plugin.TextCommand):
             start_row, start_col = self.view.rowcol(location.a)
             end_row, end_col = self.view.rowcol(location.b)
 
+            diagnostics = list(DIAGNOSTIC_CACHE.get_diagnostic_at(self.view, location))
             try:
                 CLANGD_CLIENT.textDocument_codeAction(
-                    self.view.file_name(), start_row, start_col, end_row, end_col
+                    self.view.file_name(),
+                    start_row,
+                    start_col,
+                    end_row,
+                    end_col,
+                    diagnostics,
                 )
             except ServerOffline:
                 pass
