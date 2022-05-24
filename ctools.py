@@ -72,6 +72,9 @@ class CompletionList(sublime.CompletionList):
             kind = _KIND_MAP.get(item["kind"], sublime.KIND_AMBIGUOUS)
             text_changes = item["textEdit"]
 
+            # remove clangd included closing bracket
+            trigger = trigger.rstrip(">")
+
         except Exception as err:
             raise ValueError(f"error build completion from {item}") from err
 
