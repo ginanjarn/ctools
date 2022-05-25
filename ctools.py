@@ -181,7 +181,7 @@ class DiagnosticCache:
                 yield diagnostic.raw_data
 
 
-DIAGNOSTIC_CACHE = DiagnosticCache()
+DIAGNOSTIC_CACHE = DiagnosticCache([])
 
 
 class Diagnostics:
