@@ -1213,9 +1213,13 @@ class EventListener(sublime_plugin.EventListener):
         finally:
             Diagnostics(file_name).destroy_panel()
 
-    def on_post_save_async(self, view: sublime.View) -> None:
+    def on_pre_save_async(self, view: sublime.View) -> None:
         file_name = view.file_name()
         if not (valid_source(view) and CLANGD_CLIENT.is_initialized):
+            return
+
+        # view not modified
+        if not view.is_dirty():
             return
 
         try:
