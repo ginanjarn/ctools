@@ -1080,6 +1080,7 @@ class EventListener(sublime_plugin.EventListener):
             sublime.status_message(f"run server error: {err}")
 
         else:
+            CANCEL_RUN_SERVER.reset()
             sublime.status_message("'clangd' is running")
             CLANGD_CLIENT.initialize(project_path)
 
