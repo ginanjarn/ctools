@@ -736,7 +736,7 @@ class ClangdClient(lsp.LSPClient):
             "initializationOptions": {"clangdFileStatus": True, "fallbackFlags": []}
         }
 
-    def run_server(self, clangd="clangd", *args):
+    def run_server(self):
         """run clangd server
 
         Raises:
@@ -745,10 +745,9 @@ class ClangdClient(lsp.LSPClient):
 
         sublime.status_message("starting 'clangd'")
 
-        commands = [clangd]
-        if LOGGER.level > logging.WARNING:
+        commands = ["clangd"]
+        if LOGGER.level == logging.DEBUG:
             commands.extend(["--log=verbose", "--pretty"])
-        commands.extend(args)
 
         self.transport = StandardIO(commands)
         self._register_commands()
