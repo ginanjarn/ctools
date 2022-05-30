@@ -513,7 +513,7 @@ class LSPClient:
                             "deprecatedSupport": True,
                             "documentationFormat": ["markdown", "plaintext"],
                             "insertReplaceSupport": True,
-                            "insertTextModeSupport": {"valueSet": [1, 2]},
+                            "insertTextModeSupport": {"valueSet": [1]},
                             "labelDetailsSupport": True,
                             "preselectSupport": True,
                             "resolveSupport": {
@@ -523,7 +523,7 @@ class LSPClient:
                                     "additionalTextEdits",
                                 ]
                             },
-                            "snippetSupport": True,
+                            "snippetSupport": False,
                             "tagSupport": {"valueSet": [1]},
                         },
                         "completionItemKind": {

@@ -79,9 +79,6 @@ class CompletionList(sublime.CompletionList):
         except Exception as err:
             raise ValueError(f"error build completion from {item}") from err
 
-        # remove snippets
-        text_changes["newText"] = trigger
-
         additional_text_edits = item.get("additionalTextEdits")
         if additional_text_edits is not None:
             return sublime.CompletionItem.command_completion(
