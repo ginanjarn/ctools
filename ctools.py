@@ -1,13 +1,15 @@
 """ctools main app"""
 
+import dataclasses
 import datetime
 import logging
 import os
+import re
 import threading
 import time
 
 from collections import OrderedDict
-from typing import List, Union, Dict, Iterator
+from typing import List, Union, Dict, Iterator, Iterable
 
 import sublime
 import sublime_plugin
@@ -71,11 +73,11 @@ class CompletionList(sublime.CompletionList):
             kind = _KIND_MAP.get(item["kind"], sublime.KIND_AMBIGUOUS)
             text_changes = item["textEdit"]
 
+            # remove clangd included closing bracket
+            trigger = trigger.rstrip(">")
+
         except Exception as err:
             raise ValueError(f"error build completion from {item}") from err
-
-        # remove snippets
-        text_changes["newText"] = trigger
 
         additional_text_edits = item.get("additionalTextEdits")
         if additional_text_edits is not None:
@@ -104,10 +106,10 @@ class CompletionList(sublime.CompletionList):
 
         LOGGER.debug("completion_list: %s", completion_items)
 
-        def filter_by_score(item):
-            return item.get("score", 0)
+        # def filter_by_score(item):
+        #     return item.get("score", 0)
 
-        completion_items.sort(key=filter_by_score, reverse=True)
+        # completion_items.sort(key=filter_by_score, reverse=True)
         completions = [
             cls.build_completion(completion) for completion in completion_items
         ]
@@ -116,7 +118,7 @@ class CompletionList(sublime.CompletionList):
             completions=completions if completion_items else [],
             flags=sublime.INHIBIT_WORD_COMPLETIONS
             | sublime.INHIBIT_EXPLICIT_COMPLETIONS
-            | sublime.INHIBIT_REORDER,
+            # | sublime.INHIBIT_REORDER,
         )
 
 
@@ -129,23 +131,54 @@ class CtoolsApplyCompletionCommand(sublime_plugin.TextCommand):
         self.view.run_command("ctools_apply_document_change", {"changes": changes})
 
 
+@dataclasses.dataclass
 class DiagnosticItem:
     """diagnostic item"""
 
-    def __init__(self, region: sublime.Region, severity: int, message: str):
-        self.region = region
-        self.severity = severity
-        self.message = message
+    region: sublime.Region
+    severity: int
+    message: str
+    raw_data: Dict[str, object]
 
     @classmethod
-    def from_rpc(cls, view: sublime.View, *, diagnostic: dict):
+    def from_rpc(cls, view: sublime.View, diagnostic: Dict[str, object], /):
         """from rpc"""
-        range_ = diagnostic["range"]
-        start = view.text_point(range_["start"]["line"], range_["start"]["character"])
-        end = view.text_point(range_["end"]["line"], range_["end"]["character"])
-        return cls(
-            sublime.Region(start, end), diagnostic["severity"], diagnostic["message"]
-        )
+        try:
+            range_ = diagnostic["range"]
+            start = view.text_point(
+                range_["start"]["line"], range_["start"]["character"]
+            )
+            end = view.text_point(range_["end"]["line"], range_["end"]["character"])
+
+            severity = diagnostic["severity"]
+            message = diagnostic["message"]
+            region = sublime.Region(start, end)
+
+        except Exception as err:
+            raise ValueError(f"error loading diagnostic from rpc: {err}") from err
+
+        return cls(region, severity, message, diagnostic)
+
+
+@dataclasses.dataclass
+class DiagnosticCache:
+    diagnostics: List[DiagnosticItem] = None
+
+    def set(self, diagnostics: Iterable[DiagnosticItem]):
+        self.diagnostics = list(diagnostics)
+
+    def get_diagnostic_at(
+        self, view: sublime.View, cursor: sublime.Region, /
+    ) -> Dict[str, object]:
+
+        for diagnostic in self.diagnostics:
+            # check if cursor in diagnostic range
+            region = diagnostic.region
+            if region.contains(cursor) or cursor.contains(region):
+                yield diagnostic.raw_data
+
+
+DIAGNOSTIC_CACHE = DiagnosticCache([])
 
 
 class Diagnostics:
@@ -158,35 +191,18 @@ class Diagnostics:
         4: "ctools.hint",
     }
 
+    # Diagnostic severity
+    ERROR = 1
+    WARNING = 2
+    INFO = 3
+    HINT = 4
+
     def __init__(self, file_name: str):
         self.window = sublime.active_window()
         self.file_name = file_name
         self.view = self.window.find_open_file(file_name)
         self.message_map = {}
         self.outputpanel_name = f"ctools:{file_name}"
-
-    def add_regions(
-        self, key: str, regions: List[sublime.Region], *, error_region: bool = False
-    ):
-        """add syntax highlight regions"""
-
-        self.view.add_regions(
-            key=key,
-            regions=regions,
-            scope="Comment",
-            icon="circle" if error_region else "dot",
-            flags=(
-                sublime.DRAW_NO_FILL
-                | sublime.DRAW_NO_OUTLINE
-                | sublime.DRAW_SQUIGGLY_UNDERLINE
-            ),
-        )
-
-    # Diagnostic severity
-    ERROR = 1
-    WARNING = 2
-    INFO = 3
-    HINT = 4
 
     def set_diagnostics(self, diagnostics: List[dict]):
         """set diagnostic
@@ -195,65 +211,69 @@ class Diagnostics:
         * apply syntax highlight
         """
 
-        error_region = []
-        warning_region = []
-        information_region = []
-        hint_region = []
-
         diagnostic_items = [
-            DiagnosticItem.from_rpc(self.view, diagnostic=diagnostic)
-            for diagnostic in diagnostics
+            DiagnosticItem.from_rpc(self.view, diagnostic) for diagnostic in diagnostics
         ]
 
-        for diagnostic in diagnostic_items:
-            row, col = self.view.rowcol(diagnostic.region.a)
-            self.message_map[(row, col)] = diagnostic.message
+        DIAGNOSTIC_CACHE.set(diagnostic_items)
 
-            if diagnostic.severity == self.ERROR:
-                error_region.append(diagnostic.region)
-            elif diagnostic.severity == self.WARNING:
-                warning_region.append(diagnostic.region)
-            elif diagnostic.severity == self.INFO:
-                information_region.append(diagnostic.region)
-            elif diagnostic.severity == self.HINT:
-                hint_region.append(diagnostic.region)
+        message_holder = []
 
-        # clear if any highlight in view
-        self.erase_highlight()
+        for severity in (self.ERROR, self.WARNING, self.INFO, self.HINT):
+            filtered_diagnostics = [
+                diagnostic
+                for diagnostic in diagnostic_items
+                if diagnostic.severity == severity
+            ]
 
-        self.add_regions(
-            key=self.REGION_KEYS[self.ERROR], regions=error_region, error_region=True
+            # add highlight
+            self.add_highlight(severity, filtered_diagnostics)
+
+            # create output message
+            messages = [
+                self._build_message(diagnostic) for diagnostic in filtered_diagnostics
+            ]
+            message_holder.extend(messages)
+
+        # create output panel
+        self.create_panel("\n".join(message_holder))
+
+    def add_highlight(self, severity: int, diagnostics: Iterable[DiagnosticItem]):
+        regions = [diagnostic.region for diagnostic in diagnostics]
+
+        self.view.add_regions(
+            key=self.REGION_KEYS[severity],
+            regions=regions,
+            scope="Comment",
+            icon="circle" if severity == self.ERROR else "dot",
+            flags=(
+                sublime.DRAW_NO_FILL
+                | sublime.DRAW_NO_OUTLINE
+                | sublime.DRAW_SQUIGGLY_UNDERLINE
+            ),
         )
-        self.add_regions(key=self.REGION_KEYS[self.WARNING], regions=warning_region)
-        self.add_regions(key=self.REGION_KEYS[self.INFO], regions=information_region)
-        self.add_regions(key=self.REGION_KEYS[self.HINT], regions=hint_region)
+
+    def _build_message(self, diagnostic: DiagnosticItem):
+        short_name = os.path.basename(self.view.file_name())
+        row, col = self.view.rowcol(diagnostic.region.begin())
+        return f"{short_name}:{row+1}:{col+1} {diagnostic.message}"
 
     def erase_highlight(self):
         """erase highlight"""
-
         for _, value in self.REGION_KEYS.items():
             self.view.erase_regions(value)
 
+    def create_panel(self, message: str):
+        """create new panel"""
+
+        panel = self.window.create_output_panel(self.outputpanel_name)
+        panel.set_read_only(False)
+        panel.run_command(
+            "append", {"characters": message},
+        )
+
     def show_panel(self) -> None:
         """show output panel"""
-
-        def build_message(mapping: Dict[tuple, str]):
-            short_name = os.path.basename(self.file_name)
-            for key, val in mapping.items():
-                row, col = key
-                yield f"{short_name}:{row+1}:{col} {val}"
-
-        if self.message_map:
-
-            # create new panel
-            panel = self.window.create_output_panel(self.outputpanel_name)
-            message = "\n".join(build_message(self.message_map))
-
-            panel.set_read_only(False)
-            panel.run_command(
-                "append", {"characters": message},
-            )
-
         self.window.run_command(
             "show_panel", {"panel": f"output.{self.outputpanel_name}"}
         )
@@ -263,79 +283,73 @@ class Diagnostics:
         self.window.destroy_output_panel(self.outputpanel_name)
 
 
+@dataclasses.dataclass
 class ChangeItem:
-    """this class hold change data"""
+    """text change item"""
 
-    def __init__(self, region: sublime.Region, old_text: str, new_text: str):
-        self.region = region
-        self.old_text = old_text
-        self.new_text = new_text
+    region: sublime.Region
+    old_text: str
+    new_text: str
 
-        # cursor position move
-        self.cursor_move = len(new_text) - region.size()
+    @property
+    def cursor_move(self):
+        return len(self.new_text) - self.region.size()
 
     def get_region(self, cursor_move: int = 0):
         """get region with adjusted position to cursor move"""
         return sublime.Region(self.region.a + cursor_move, self.region.b + cursor_move)
 
-    def __repr__(self):
-        return (
-            f"ChangeItem({repr(self.region)}, "
-            f"{repr(self.old_text)}, {repr(self.new_text)}, "
-            f"{self.cursor_move})"
-        )
-
     @classmethod
-    def from_rpc(cls, view: sublime.View, *, change: Dict):
+    def from_rpc(cls, view: sublime.View, change: Dict[str, object], /):
         """from rpc"""
 
-        range_ = change["range"]
-        new_text = change["newText"]
+        try:
+            range_ = change["range"]
+            new_text = change["newText"]
 
-        start = view.text_point(range_["start"]["line"], range_["start"]["character"])
-        end = view.text_point(range_["end"]["line"], range_["end"]["character"])
+            start = view.text_point(
+                range_["start"]["line"], range_["start"]["character"]
+            )
+            end = view.text_point(range_["end"]["line"], range_["end"]["character"])
+
+        except Exception as err:
+            raise ValueError(f"error loading changes from rpc: {err}") from err
 
         region = sublime.Region(start, end)
         old_text = view.substr(region)
         return cls(region, old_text, new_text)
 
 
-class DocumentChangeSync:
-    """Document change sync prevent multiple file changes at same time"""
+class DocumentChangeLock:
+    """Document change lock prevent multiple file changes at same time"""
 
     def __init__(self):
         self._lock = threading.Lock()
 
-    @property
-    def busy(self):
-        self._lock.locked()
+    def locked(self):
+        return self._lock.locked()
 
-    def set_busy(self):
+    def acquire(self):
         self._lock.acquire()
 
-    def set_finished(self):
+    def release(self):
         try:
             self._lock.release()
         except RuntimeError:
             pass
 
 
-DOCUMENT_CHANGE_SYNC = DocumentChangeSync()
+DOCUMENT_CHANGE_LOCK = DocumentChangeLock()
 
 
 class CtoolsApplyDocumentChangeCommand(sublime_plugin.TextCommand):
     """apply document change to view"""
 
     def run(self, edit: sublime.Edit, changes: list):
-        LOGGER.info("CtoolsApplyDocumentChangeCommand")
-
-        LOGGER.debug("apply changes to %s", self.view.file_name())
-        LOGGER.debug("changes: %s", changes)
-        view: sublime.View = self.view
-        LOGGER.debug(f"{view.file_name()} is loading: {view.is_loading()}")
+        LOGGER.info(f"CtoolsApplyDocumentChangeCommand: {changes}")
 
         list_change_item: List[ChangeItem] = [
-            ChangeItem.from_rpc(self.view, change=change) for change in changes
+            ChangeItem.from_rpc(self.view, change) for change in changes
         ]
         try:
             self.apply(edit, list_change_item)
@@ -358,7 +372,7 @@ class CtoolsApplyDocumentChangeCommand(sublime_plugin.TextCommand):
             self.view.insert(edit, region.a, change.new_text)
             cursor_move += change.cursor_move
 
-        DOCUMENT_CHANGE_SYNC.set_finished()
+        DOCUMENT_CHANGE_LOCK.release()
 
 
 class WindowProgress:
@@ -384,8 +398,7 @@ class WindowProgress:
 
     def finish(self):
         self.busy = False
-        window: sublime.Window = sublime.active_window()
-        for view in window.views():
+        for view in sublime.active_window().views():
             view.erase_status(self.status_key)
 
 
@@ -396,7 +409,6 @@ class ActiveDocument:
     """commands to active view"""
 
     def __init__(self):
-
         self._completion_result = None
         self._window: sublime.Window = None
         self._view: sublime.View = None
@@ -428,11 +440,21 @@ class ActiveDocument:
         return result
 
     def show_completions(self, completions):
-
         completions = completions["items"]
-        completion_list = CompletionList.from_rpc(completions)
-        self._completion_result = completion_list
+        if not completions:
+            return
 
+        try:
+            completion_list = CompletionList.from_rpc(completions)
+            self._completion_result = completion_list
+
+        except Exception as err:
+            LOGGER.error(f"build completion error: {err}")
+            return
+
+        self.trigger_completion()
+
+    def trigger_completion(self):
         self.view.run_command(
             "auto_complete",
             {
@@ -445,6 +467,9 @@ class ActiveDocument:
     def hide_completion(self):
         self.view.run_command("hide_auto_complete")
 
+    _start_pre_code_pattern = re.compile(r"^<pre><code.*>")
+    _end_pre_code_pattern = re.compile(r"</code></pre>$")
+
     @staticmethod
     def adapt_minihtml(lines: str) -> Iterator[str]:
         """adapt sublime minihtml tag
@@ -454,13 +479,14 @@ class ActiveDocument:
         pre_tag = False
         for line in lines.splitlines():
 
-            if line.startswith("<pre>"):
+            if open_pre := ActiveDocument._start_pre_code_pattern.match(line):
+                line = "<div class='code_block'>%s" % line[open_pre.end() :]
                 pre_tag = True
-            elif pre_tag and line.endswith("</pre>"):
+
+            if closing_pre := ActiveDocument._end_pre_code_pattern.search(line):
+                line = "%s</div>" % line[: closing_pre.start()]
                 pre_tag = False
 
-            line = line.replace("<pre>", "<div class='code_block'>")
-            line = line.replace("</pre>", "</div>")
             line = line.replace("  ", "&nbsp;&nbsp;")
             line = f"{line}<br />" if pre_tag else line
 
@@ -468,25 +494,43 @@ class ActiveDocument:
 
     def show_popup(self, documentation):
 
-        contents = documentation["contents"]["value"]
-        kind = documentation["contents"]["kind"]
-        start = documentation["range"]["start"]
-        location = self.view.text_point(start["line"], start["character"])
+        try:
+            contents = documentation["contents"]["value"]
+            kind = documentation["contents"]["kind"]
+            start = documentation["range"]["start"]
+            location = self.view.text_point(start["line"], start["character"])
+
+            # clean up 'clangd' html escape character
+            contents = contents.replace("\\", "")
+
+        except Exception as err:
+            LOGGER.error(f"show_popup param error: {err}")
+            return
 
         if kind == "markdown":
-            contents = mistune.markdown(contents)
+            contents = mistune.markdown(contents, escape=False)
 
         style = """
         body {
             font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif,"Apple Color Emoji","Segoe UI Emoji";
-            line-height: 1.5;
+            margin: 0, 0.8em, 0.8em, 0.8em;
         }
-        code {
+        code, .code_block {
             background-color: color(var(--background) alpha(0.8));
             font-family: ui-monospace,SFMono-Regular,SF Mono,Menlo,Consolas,Liberation Mono,monospace;
+            border-radius: 0.4em;
         }
+
+        code {
+            padding: 0 0.2em 0 0.2em;
+        }
+
         .code_block {
-            background-color: color(var(--background) alpha(0.8));
+            padding: 0.4em;
+        }
+        
+        ol, ul {
+            padding-left: 1em;
         }
         """
         contents = "\n".join(self.adapt_minihtml(contents))
@@ -502,12 +546,20 @@ class ActiveDocument:
     def show_code_action(self, action_params: List[dict]):
         def on_done(index=-1):
             if index > -1:
-                self.view.run_command(
-                    "ctools_workspace_exec_command",
-                    {"params": action_params[index]["command"]},
-                )
+                edit = action_params[index].get("edit")
+                if edit:
+                    self.apply_edit_changes(edit["changes"])
 
-        items = [item["title"] for item in action_params]
+                command = action_params[index].get("command")
+                if command:
+                    self.view.run_command(
+                        "ctools_workspace_exec_command",
+                        {"params": action_params[index]["command"]},
+                    )
+
+        items = [
+            "%s: %s" % (item["kind"].title(), item["title"]) for item in action_params
+        ]
         self.window.show_quick_panel(items, on_done)
 
     def apply_document_change(self, changes: List[dict]):
@@ -539,14 +591,14 @@ class ActiveDocument:
             LOGGER.debug("try apply changes to %s", file_name)
 
             while True:
-                if DOCUMENT_CHANGE_SYNC.busy:
+                if DOCUMENT_CHANGE_LOCK.locked():
                     LOGGER.debug("busy")
                     time.sleep(0.5)
                     continue
                 break
 
             LOGGER.debug("apply changes to: %s", file_name)
-            DOCUMENT_CHANGE_SYNC.set_busy()
+            DOCUMENT_CHANGE_LOCK.acquire()
             document = Document(file_name, force_open=True)
 
             try:
@@ -556,7 +608,7 @@ class ActiveDocument:
                 LOGGER.error(err)
 
             finally:
-                DOCUMENT_CHANGE_SYNC.set_finished()
+                DOCUMENT_CHANGE_LOCK.release()
 
             LOGGER.debug("finish apply to: %s", file_name)
 
@@ -590,10 +642,15 @@ class ActiveDocument:
         LOGGER.debug("goto: %s", params)
 
         def get_location(location: Dict[str, object]):
-            file_name = DocumentURI(location["uri"]).to_path()
-            start = location["range"]["start"]
-            row, col = start["line"] + 1, start["character"] + 1
-            return f"{file_name}:{row}:{col}"
+            try:
+                file_name = DocumentURI(location["uri"]).to_path()
+                start = location["range"]["start"]
+                row, col = start["line"] + 1, start["character"] + 1
+
+            except Exception as err:
+                LOGGER.error(f"get location error: {err}")
+            else:
+                return f"{file_name}:{row}:{col}"
 
         locations = [get_location(item) for item in params]
 
@@ -613,13 +670,13 @@ class Document:
 
         self.window: sublime.Window = sublime.active_window()
         self.file_name = file_name
+        self.view: sublime.View = self.window.find_open_file(file_name)
 
         if force_open:
             self.view: sublime.View = self.window.open_file(file_name)
-        else:
-            self.view: sublime.View = self.window.find_open_file(file_name)
-            if self.view is None:
-                raise ValueError(f"unable get view for {file_name}")
+
+        if self.view is None:
+            raise ValueError(f"unable get view for {file_name}")
 
     def focus_view(self):
         self.window.focus_view(self.view)
@@ -638,7 +695,7 @@ class Document:
 
     def apply_diagnostics(self, diagnostics_item: List[dict]):
 
-        if DOCUMENT_CHANGE_SYNC.busy:
+        if DOCUMENT_CHANGE_LOCK.locked():
             LOGGER.debug("in document change process")
             return
 
@@ -660,12 +717,6 @@ class Document:
         diagnostic = Diagnostics(self.file_name)
         diagnostic.show_panel()
 
-    def set_status(self, message: str):
-        self.view.set_status("ctools_status", message)
-
-    def erase_status(self):
-        self.view.erase_status("ctools_status")
-
 
 ACTIVE_DOCUMENT: ActiveDocument = ActiveDocument()
 
@@ -682,7 +733,7 @@ class ClangdClient(lsp.LSPClient):
             "initializationOptions": {"clangdFileStatus": True, "fallbackFlags": []}
         }
 
-    def run_server(self, clangd="clangd", *args):
+    def run_server(self):
         """run clangd server
 
         Raises:
@@ -691,10 +742,9 @@ class ClangdClient(lsp.LSPClient):
 
         sublime.status_message("starting 'clangd'")
 
-        commands = [clangd]
-        if LOGGER.level > logging.WARNING:
+        commands = ["clangd"]
+        if LOGGER.level == logging.DEBUG:
             commands.extend(["--log=verbose", "--pretty"])
-        commands.extend(args)
 
         self.transport = StandardIO(commands)
         self._register_commands()
@@ -720,13 +770,13 @@ class ClangdClient(lsp.LSPClient):
             sublime.status_message("'clangd' terminated")
 
     def handle_initialize(self, message: lsp.RPCMessage):
-        LOGGER.info("handle_initialize")
+        LOGGER.info(f"handle_initialize: {message}")
 
-        LOGGER.debug("params: %s", message)
-        # FIXME: handle initialize
-        # ------------------------
         if message.error:
-            LOGGER.error(message.error)
+            LOGGER.debug(f"error: {message.error}")
+            return
+
+        if not message.result:
             return
 
         capabilities = message.result["capabilities"]
@@ -736,8 +786,7 @@ class ClangdClient(lsp.LSPClient):
         ]
 
         # notify if initialized
-        self.transport.notify(lsp.RPCMessage.notification("initialized", {}))
-        self.is_initialized = True
+        self.initialized()
 
         file_name = ACTIVE_DOCUMENT.view.file_name()
         source = ACTIVE_DOCUMENT.view.substr(
@@ -746,37 +795,37 @@ class ClangdClient(lsp.LSPClient):
         self.textDocument_didOpen(file_name, source)
 
     def handle_textDocument_completion(self, message: lsp.RPCMessage):
-        LOGGER.info("handle_textDocument_completion")
+        LOGGER.info(f"handle_textDocument_completion: {message}")
 
         if message.error:
-            LOGGER.error(message.error)
+            LOGGER.debug(f"error: {message.error}")
             return
 
-        if message.result is None:
+        if not message.result:
             return
 
         ACTIVE_DOCUMENT.show_completions(message.result)
 
     def handle_textDocument_hover(self, message: lsp.RPCMessage):
-        LOGGER.info("handle_textDocument_hover")
+        LOGGER.info(f"handle_textDocument_hover: {message}")
 
         if message.error:
-            LOGGER.error(message.error)
+            LOGGER.debug(f"error: {message.error}")
             return
 
-        if message.result is None:
+        if not message.result:
             return
 
         ACTIVE_DOCUMENT.show_popup(message.result)
 
     def handle_textDocument_formatting(self, message: lsp.RPCMessage):
-        LOGGER.info("handle_textDocument_formatting")
+        LOGGER.info(f"handle_textDocument_formatting: {message}")
 
         if message.error:
-            LOGGER.error(message.error)
+            LOGGER.debug(f"error: {message.error}")
             return
 
-        if message.result is None:
+        if not message.result:
             return
 
         try:
@@ -785,134 +834,136 @@ class ClangdClient(lsp.LSPClient):
             LOGGER.error(err)
 
     def handle_textDocument_semanticTokens_full(self, message: lsp.RPCMessage):
-        LOGGER.info("handle_textDocument_semanticTokens_full")
-        LOGGER.debug(message)
+        LOGGER.info(f"handle_textDocument_semanticTokens_full: {message}")
 
     def handle_textDocument_documentLink(self, message: lsp.RPCMessage):
-        LOGGER.info("handle_textDocument_documentLink")
-        LOGGER.debug(message)
+        LOGGER.info(f"handle_textDocument_documentLink: {message}")
 
     def handle_textDocument_documentSymbol(self, message: lsp.RPCMessage):
-        LOGGER.info("handle_textDocument_documentSymbol")
-        LOGGER.debug(message)
+        LOGGER.info(f"handle_textDocument_documentSymbol: {message}")
 
     def handle_textDocument_codeAction(self, message: lsp.RPCMessage):
-        LOGGER.info("handle_textDocument_codeAction")
-        LOGGER.debug(message)
+        LOGGER.info(f"handle_textDocument_codeAction: {message}")
 
         if message.error:
-            LOGGER.error(message.error)
+            LOGGER.debug(f"error: {message.error}")
             return
 
-        if message.result is None:
+        if not message.result:
             return
 
         ACTIVE_DOCUMENT.show_code_action(message.result)
 
     def handle_textDocument_publishDiagnostics(self, message: lsp.RPCMessage):
-        LOGGER.info("handle_textDocument_publishDiagnostics")
-        LOGGER.debug(message)
+        LOGGER.info(f"handle_textDocument_publishDiagnostics: {message}")
 
         params = message.params
         file_name = DocumentURI(params["uri"]).to_path()
+        document_version = params.get("version", -1)
+
         working_version = self.get_document_version(
             file_name, reset=False, increment=False
         )
-        document_version = params.get("version", -1)
+
         if document_version < 0:
             LOGGER.debug(f"{file_name} not opened")
             return
 
         if working_version != document_version:
             LOGGER.debug(
-                "incompatible version, "
+                "invalid version "
                 f"current: {working_version} != expected: {document_version}"
             )
             return
 
         diagnostics = params["diagnostics"]
         document = Document(file_name)
-        document.clear_diagnostics()
 
         if not diagnostics:
+            document.clear_diagnostics()
             return
 
         document.apply_diagnostics(diagnostics)
 
     def handle_window_workDoneProgress_create(self, message: lsp.RPCMessage):
-        LOGGER.info("handle_window_workDoneProgress_create")
-        LOGGER.debug(message)
+        LOGGER.info(f"handle_window_workDoneProgress_create: {message}")
 
     def handle_S_progress(self, message: lsp.RPCMessage):
-        LOGGER.info("handle_S_progress")
-        LOGGER.debug(message)
+        LOGGER.info(f"handle_S_progress: {message}")
 
     def handle_workspace_applyEdit(self, message: lsp.RPCMessage):
-        LOGGER.info("handle_workspace_applyEdit")
+        LOGGER.info(f"handle_workspace_applyEdit: {message}")
 
         params = message.params
         try:
             changes = params["edit"]["changes"]
         except Exception as err:
-            LOGGER.error(repr(err))
-        else:
-            try:
-                ACTIVE_DOCUMENT.apply_edit_changes(changes)
-            except Exception as err:
-                LOGGER.error("error apply edit_changes: %s", repr(err))
-
-    def handle_textDocument_prepareRename(self, message: lsp.RPCMessage):
-        LOGGER.info("handle_textDocument_prepareRename")
-        LOGGER.debug("message: %s", message)
-
-        if message.error:
-            LOGGER.error(message.error)
+            LOGGER.error(f"error get edit changes: {err}")
             return
 
-        if message.result is None:
+        try:
+            ACTIVE_DOCUMENT.apply_edit_changes(changes)
+        except Exception as err:
+            LOGGER.error("error apply edit_changes: %s", repr(err))
+
+    def handle_textDocument_prepareRename(self, message: lsp.RPCMessage):
+        LOGGER.info(f"handle_textDocument_prepareRename: {message}")
+
+        if message.error:
+            LOGGER.debug(f"error: {message.error}")
+            return
+
+        if not message.result:
             return
 
         ACTIVE_DOCUMENT.prepare_rename(message.result)
 
     def handle_textDocument_rename(self, message: lsp.RPCMessage):
-        LOGGER.info("handle_textDocument_rename")
-        LOGGER.debug("message: %s", message)
+        LOGGER.info(f"handle_textDocument_rename: {message}")
 
         if message.error:
+            LOGGER.debug(f"error: {message.error}")
             return
 
-        if message.result is None:
+        if not message.result:
+            return
+
+        changes = message.result.get("changes")
+        if not changes:
             return
 
         try:
-            changes = message.result["changes"]
+            ACTIVE_DOCUMENT.apply_edit_changes(changes)
         except Exception as err:
-            LOGGER.error(repr(err))
-        else:
-            try:
-                ACTIVE_DOCUMENT.apply_edit_changes(changes)
-            except Exception as err:
-                LOGGER.error("error apply edit_changes: %s", repr(err))
+            LOGGER.error("error apply edit_changes: %s", repr(err))
 
     def handle_textDocument_definition(self, message: lsp.RPCMessage):
-        LOGGER.info("handle_textDocument_definition")
-        LOGGER.debug("message: %s", message)
+        LOGGER.info(f"handle_textDocument_definition: {message}")
 
-        if message.result is None:
+        if message.error:
+            LOGGER.debug(f"error: {message.error}")
             return
+
+        if not message.result:
+            return
+
         ACTIVE_DOCUMENT.goto(message.result)
 
     def handle_textDocument_declaration(self, message: lsp.RPCMessage):
-        LOGGER.info("handle_textDocument_declaration")
-        LOGGER.debug("message: %s", message)
+        LOGGER.info(f"handle_textDocument_declaration: {message}")
 
-        if message.result is None:
+        if message.error:
+            LOGGER.debug(f"error: {message.error}")
             return
+
+        if not message.result:
+            return
+
         ACTIVE_DOCUMENT.goto(message.result)
 
     def handle_textDocument_clangd_fileStatus(self, message: lsp.RPCMessage):
-        LOGGER.info("handle_textDocument_clangd_fileStatus")
-        LOGGER.debug("message: %s", message)
+        LOGGER.info(f"handle_textDocument_clangd_fileStatus: {message}")
+
         params = message.params
 
         if params["state"] == "idle":
@@ -965,13 +1016,21 @@ def pipe(func):
 
 
 def valid_source(view: sublime.View) -> bool:
-    return view.match_selector(0, "source.c++") or view.match_selector(0, "source.c")
+    if view.match_selector(0, "source.c++"):
+        return True
+    if view.match_selector(0, "source.c"):
+        return True
+    return False
 
 
 def valid_identifier(view: sublime.View, location: int):
-    if view.match_selector(location, "string") or view.match_selector(
-        location, "comment"
-    ):
+
+    if view.match_selector(location, "comment"):
+        return False
+    # prevent treat preprocessor as string
+    if view.match_selector(location, "meta.preprocessor"):
+        return True
+    if view.match_selector(location, "string"):
         return False
     return True
 
@@ -1018,7 +1077,8 @@ class EventListener(sublime_plugin.EventListener):
             sublime.status_message(f"run server error: {err}")
 
         else:
-            sublime.status_message("'gopls' is running")
+            CANCEL_RUN_SERVER.reset()
+            sublime.status_message("'clangd' is running")
             CLANGD_CLIENT.initialize(project_path)
 
     def on_query_completions(
@@ -1064,8 +1124,15 @@ class EventListener(sublime_plugin.EventListener):
         if not valid_source(view):
             return
 
-        if not (hover_zone == sublime.HOVER_TEXT and valid_identifier(view, point)):
+        if not hover_zone == sublime.HOVER_TEXT:
             # LOGGER.debug("currently only support HOVER_TEXT")
+            return
+
+        if not valid_identifier(view, point):
+            return
+
+        text: str = view.substr(view.word(point))
+        if not text.isidentifier():
             return
 
         if point == view.size():
@@ -1146,9 +1213,13 @@ class EventListener(sublime_plugin.EventListener):
         finally:
             Diagnostics(file_name).destroy_panel()
 
-    def on_post_save_async(self, view: sublime.View) -> None:
+    def on_pre_save_async(self, view: sublime.View) -> None:
         file_name = view.file_name()
         if not (valid_source(view) and CLANGD_CLIENT.is_initialized):
+            return
+
+        # view not modified
+        if not view.is_dirty():
             return
 
         try:
@@ -1162,7 +1233,7 @@ class TextChangeListener(sublime_plugin.TextChangeListener):
 
         view = self.buffer.primary_view()
 
-        if view.file_name() is None:
+        if not view.file_name():
             return
 
         if not (valid_source(view) and CLANGD_CLIENT.is_initialized):
@@ -1215,12 +1286,18 @@ class CtoolsCodeActionCommand(sublime_plugin.TextCommand):
 
         if valid_source(self.view) and CLANGD_CLIENT.is_initialized:
             location = self.view.sel()[0]
-            start_row, start_col = self.view.rowcol(location.a)
-            end_row, end_col = self.view.rowcol(location.b)
+            start_row, start_col = self.view.rowcol(location.begin())
+            end_row, end_col = self.view.rowcol(location.end())
 
+            diagnostics = list(DIAGNOSTIC_CACHE.get_diagnostic_at(self.view, location))
             try:
                 CLANGD_CLIENT.textDocument_codeAction(
-                    self.view.file_name(), start_row, start_col, end_row, end_col
+                    self.view.file_name(),
+                    start_row,
+                    start_col,
+                    end_row,
+                    end_col,
+                    diagnostics,
                 )
             except ServerOffline:
                 pass
