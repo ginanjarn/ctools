@@ -1,5 +1,11 @@
 [
 	{
+		"caption" : "Show Code Action",
+		"mnemonic" : "A",
+		"id" : "ctools",
+		"command" : "ctools_code_action",
+	},
+	{
 		"caption" : "Format Code",
 		"mnemonic" : "F",
 		"id" : "ctools",
